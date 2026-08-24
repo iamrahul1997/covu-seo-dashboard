@@ -128,16 +128,26 @@ function windowRange() {
   a = Math.max(0, Math.min(a, total - 1));
   b = Math.max(a, Math.min(b, total - 1));
 
+  /* `why` distinguishes the two ways a comparison can be absent: the user turned
+   * it off, or we simply do not hold enough history to build an equal-length
+   * window. Those need to read differently — "from 0" for the second is a lie. */
   var span = b - a + 1;
-  var pa, pb, valid = true;
+  var pa, pb, valid = true, why = null, need = 0;
   if (COMPARE === 'none') {
-    valid = false;
+    valid = false; why = 'off';
   } else if (COMPARE === 'year') {
-    pa = a - 52; pb = b - 52; valid = pa >= 0;
+    pa = a - 52; pb = b - 52;
+    valid = pa >= 0;
+    if (!valid) { why = 'history'; need = span + 52; }
   } else {
-    pa = a - span; pb = a - 1; valid = pa >= 0;
+    pa = a - span; pb = a - 1;
+    valid = pa >= 0;
+    if (!valid) { why = 'history'; need = span * 2; }
   }
-  return { a: a, b: b, pa: Math.max(0, pa), pb: pb, valid: valid, span: span };
+  return {
+    a: a, b: b, pa: Math.max(0, pa), pb: pb, valid: valid, span: span,
+    why: why, need: need, held: D.weeks.length,
+  };
 }
 
 /* Any partial weeks inside the current window, so we can say so out loud. */
@@ -365,9 +375,16 @@ function renderOverview(w, now, before, queries) {
 
 function narrative(w, now, before) {
   if (!w.valid) {
-    return 'Showing <b>' + fmtDate(D.weeks[w.a]) + '</b> to <b>' + fmtDate(weekEnd(D.weeks[w.b]))
-      + '</b> with no comparison window selected. Clicks <b>' + F(now.c) + '</b>, impressions <b>'
-      + F(now.i) + '</b>, average position <b>' + F1(now.po) + '</b>.';
+    var head = 'Showing <b>' + fmtDate(D.weeks[w.a]) + '</b> to <b>' + fmtDate(weekEnd(D.weeks[w.b]))
+      + '</b>. Clicks <b>' + F(now.c) + '</b>, impressions <b>' + F(now.i)
+      + '</b>, average position <b>' + F1(now.po) + '</b>.';
+    if (w.why === 'history') {
+      return head + ' No comparison shown: an equal-length window would need <b>' + w.need
+        + '</b> weeks of history and only <b>' + w.held + '</b> are held, back to '
+        + fmtDate(D.weeks[0]) + '. Comparing against a shorter window would overstate the change, '
+        + 'so nothing is shown rather than something misleading.';
+    }
+    return head + ' Comparison is turned off.';
   }
   var clickPct = before.c ? (now.c - before.c) / before.c * 100 : 0;
   var imprPct = before.i ? (now.i - before.i) / before.i * 100 : 0;
@@ -677,13 +694,18 @@ function render() {
   var rangeEnd = weekEnd(D.weeks[w.b]);
   if (D.meta.dataThrough && rangeEnd > D.meta.dataThrough) rangeEnd = D.meta.dataThrough;
   E('res').textContent = fmtDate(D.weeks[w.a]) + ' → ' + fmtDate(rangeEnd)
-    + (w.valid ? ' · ' + (COMPARE === 'year' ? 'vs last year' : 'vs previous period') : ' · no comparison');
+    + (w.valid ? ' · ' + (COMPARE === 'year' ? 'vs last year' : 'vs previous period')
+      : (w.why === 'history' ? ' · no comparison — not enough history' : ' · no comparison'));
 
+  /* Never print "from 0" for an absent comparison; 0 is a real number and
+   * reads as a prior period with no traffic. */
+  var noCmpChip = '<span class="chip fl">—</span>';
+  var noCmpFrom = w.why === 'history' ? 'no prior window' : 'comparison off';
   E('k4').innerHTML =
-    kpi('Total clicks', F(now.c), w.valid ? pctChip(now.c, before.c) : '<span class="chip fl">—</span>', F(before.c))
-    + kpi('Impressions', F(now.i), w.valid ? pctChip(now.i, before.i) : '<span class="chip fl">—</span>', F(before.i))
-    + kpi('Avg. CTR', F1(now.ct) + '%', w.valid ? ptChip(now.ct, before.ct) : '<span class="chip fl">—</span>', F1(before.ct) + '%')
-    + kpi('Avg. position', F1(now.po), w.valid ? posChip(now.po, before.po) : '<span class="chip fl">—</span>', F1(before.po));
+    kpi('Total clicks', F(now.c), w.valid ? pctChip(now.c, before.c) : noCmpChip, w.valid ? F(before.c) : noCmpFrom)
+    + kpi('Impressions', F(now.i), w.valid ? pctChip(now.i, before.i) : noCmpChip, w.valid ? F(before.i) : noCmpFrom)
+    + kpi('Avg. CTR', F1(now.ct) + '%', w.valid ? ptChip(now.ct, before.ct) : noCmpChip, w.valid ? F1(before.ct) + '%' : noCmpFrom)
+    + kpi('Avg. position', F1(now.po), w.valid ? posChip(now.po, before.po) : noCmpChip, w.valid ? F1(before.po) : noCmpFrom);
 
   renderPartialNotice(w);
   renderOverview(w, now, before, queries);
