@@ -71,6 +71,52 @@ a single type and silently blanks disagreeing cells — which wiped out the whol
 `meta` tab. The gid map is at the top of `api/data.js` with instructions for
 regenerating it.
 
+## Access control
+
+`middleware.js` gates every route behind Google sign-in, restricted to one email
+domain. It covers `/api/data` as well as the page — gating only the page would
+leave the 1.3MB payload readable by anyone.
+
+Configuration is deliberately all-or-nothing:
+
+| Env vars set | Behaviour |
+|---|---|
+| none of the three | auth off, site public, dashboard header shows a "public · sign-in not configured" chip |
+| all three | auth on, no redeploy needed |
+| some but not all | **fails closed** with a setup page, because partial config means someone meant to turn protection on |
+
+Required:
+
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `SESSION_SECRET` — any long random string (`openssl rand -hex 32`)
+
+Optional:
+
+- `ALLOWED_DOMAIN` — defaults to `covu.com`
+- `ALLOWED_EMAILS` — comma-separated extras outside the domain
+- `PUBLIC_ORIGIN` — pins the OAuth redirect URI. Google requires an exact match
+  against a registered value, and preview deployments get a fresh hostname every
+  time, so set this to the production origin if you want sign-in to work from
+  previews.
+
+### Google Cloud setup
+
+1. Google Cloud console → APIs & Services → Credentials → Create credentials →
+   OAuth client ID → Web application.
+2. Authorised redirect URI: `https://covu-seo-dashboard.vercel.app/api/auth/callback`
+   (add any other origin you need to sign in from).
+3. Put the client ID and secret into the Vercel project's environment variables
+   along with `SESSION_SECRET`.
+
+Sessions are a signed cookie (HMAC-SHA256 over an email and expiry, HttpOnly,
+Secure, SameSite=Lax, 7 days). There is no session store; revoking early means
+rotating `SESSION_SECRET`, which signs everyone out.
+
+`node scripts/auth-check.js` exercises all three configuration states, plus
+tampered, expired and wrong-secret sessions, the open-redirect guard on `next`,
+and a forged callback with no matching state cookie.
+
 ## HubSpot (optional)
 
 The AEO tab has a conversions panel that stays dark until a token is present.

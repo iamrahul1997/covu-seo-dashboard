@@ -815,6 +815,29 @@ function buildUI() {
   };
 }
 
+/* Header identity chip. The session cookie is HttpOnly, so who-am-I comes from
+ * the server. Also surfaces the case where sign-in has not been configured yet,
+ * so a dashboard everyone can read does not stay that way by accident. */
+function renderWho() {
+  fetch('/api/auth/me', { cache: 'no-store' })
+    .then(function (res) { return res.json().catch(function () { return null; }); })
+    .then(function (info) {
+      if (!info) return;
+      var el = E('who');
+      if (!el) return;
+      if (info.authEnabled === false) {
+        el.innerHTML = '<span class="pub" title="Anyone with the link can read this dashboard">'
+          + 'public · sign-in not configured</span>';
+      } else if (info.email) {
+        el.innerHTML = '<span class="sep">·</span>' + esc(info.email)
+          + '<span class="sep">·</span><a href="/api/auth/logout">Sign out</a>';
+      }
+    })
+    .catch(function () { /* header chip is cosmetic; never block the dashboard */ });
+}
+
+renderWho();
+
 fetch('/api/data', { cache: 'no-store' })
   .then(function (res) {
     if (!res.ok) throw new Error('HTTP ' + res.status);

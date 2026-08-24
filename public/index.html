@@ -22,6 +22,10 @@ body{margin:0;background:var(--s);color:var(--n);font-family:"Nunito Sans",syste
 .top:after{content:'';position:absolute;right:-40px;top:-60px;width:220px;height:220px;background:radial-gradient(circle,rgba(255,183,3,.22),transparent 70%)}
 .rw{display:flex;justify-content:space-between;align-items:center;font:800 15px "Nunito Sans"}
 .rw .u{font-size:12px;opacity:.7}
+#who{margin-left:0}
+#who .sep{opacity:.45;margin:0 8px}
+#who a{color:#fff;opacity:.85;text-decoration:underline}
+#who .pub{background:rgba(255,183,3,.22);color:#FFD37A;padding:2px 8px;border-radius:20px;font-weight:800;margin-left:10px}
 h1{font:900 26px/1.1 Merriweather;margin:12px 0 5px}
 .mt{font:600 13px "Nunito Sans";opacity:.82}
 
@@ -99,7 +103,7 @@ td.q2{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 <div id="load" class="load"><div class="lc"><div class="sp"></div>Loading live Search Console data…</div></div>
 <div class="w">
   <div class="top">
-    <div class="rw"><span>COVU</span><span class="u" id="prop">www.covu.com</span></div>
+    <div class="rw"><span>COVU</span><span class="u"><span id="prop">www.covu.com</span><span id="who"></span></span></div>
     <h1>SEO &amp; AEO Performance</h1>
     <div class="mt" id="mt"></div>
   </div>

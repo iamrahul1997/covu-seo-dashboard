@@ -24,10 +24,37 @@ function decorate(res) {
   return res;
 }
 
+// Runs middleware.js the way Vercel does, so auth can be tested locally.
+// Vercel skips the matcher-excluded paths; we mirror that here.
+async function runMiddleware(req, url) {
+  const excluded = url.pathname.startsWith('/api/auth/') || url.pathname.startsWith('/_vercel/');
+  if (excluded) return null;
+  const mod = await import(path.join(root, 'middleware.js') + `?t=${Date.now()}`);
+  const request = new Request(url.href, {
+    method: req.method,
+    headers: new Headers(Object.entries(req.headers).filter(([, v]) => typeof v === 'string')),
+  });
+  return (await mod.default(request)) || null;
+}
+
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+  const url = new URL(req.url, `http://localhost:${PORT}`);
   const pathname = url.pathname;
   decorate(res);
+
+  try {
+    const blocked = await runMiddleware(req, url);
+    if (blocked) {
+      res.statusCode = blocked.status;
+      blocked.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(Buffer.from(await blocked.arrayBuffer()));
+      return;
+    }
+  } catch (err) {
+    console.error('middleware error:', err);
+    res.status(500).json({ error: 'middleware: ' + String(err && err.message || err) });
+    return;
+  }
 
   if (pathname.startsWith('/api/')) {
     const name = pathname.replace(/^\/api\//, '').replace(/\.js$/, '');
