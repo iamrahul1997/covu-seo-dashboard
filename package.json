@@ -1,0 +1,13 @@
+{
+  "name": "covu-seo-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "COVU SEO & AEO dashboard — reads the GSC Data sheet and renders Search Console, GA4 and blog performance.",
+  "scripts": {
+    "check": "node scripts/check.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

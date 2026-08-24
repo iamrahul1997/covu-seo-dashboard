@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>COVU · SEO &amp; AEO Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Merriweather:wght@700;900&family=Nunito+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --n:#1C2945; --n2:#11426B; --y:#FFB703; --s:#F1F3F9; --m:#5A6B86; --b:#dfe3ec;
+  --g:#0E9F6E; --r:#B00020; --w:#B4690E; --teal:#219EBC;
+}
+*{box-sizing:border-box;letter-spacing:0}
+body{margin:0;background:var(--s);color:var(--n);font-family:"Nunito Sans",system-ui,sans-serif}
+.w{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
+
+.g{background:rgba(255,255,255,.72);backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);border:1px solid rgba(255,255,255,.65);border-radius:18px;box-shadow:0 1px 0 rgba(255,255,255,.6) inset,0 10px 30px -12px rgba(28,41,69,.28)}
+.top{background:linear-gradient(135deg,var(--n),var(--n2));color:#fff;border-radius:20px;padding:22px 26px;position:relative;overflow:hidden}
+.top:after{content:'';position:absolute;right:-40px;top:-60px;width:220px;height:220px;background:radial-gradient(circle,rgba(255,183,3,.22),transparent 70%)}
+.rw{display:flex;justify-content:space-between;align-items:center;font:800 15px "Nunito Sans"}
+.rw .u{font-size:12px;opacity:.7}
+h1{font:900 26px/1.1 Merriweather;margin:12px 0 5px}
+.mt{font:600 13px "Nunito Sans";opacity:.82}
+
+.tabs{display:flex;gap:6px;margin:16px 0;padding:7px;flex-wrap:wrap}
+.tab{border:0;background:none;color:var(--m);font:700 13.5px "Nunito Sans";padding:8px 15px;border-radius:11px;cursor:pointer}
+.tab.on{background:var(--n);color:#fff;box-shadow:0 6px 16px -8px rgba(28,41,69,.6)}
+
+.ctrl{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 16px;margin-bottom:14px}
+.lab{font:800 11px "Nunito Sans";letter-spacing:1px;color:var(--m);text-transform:uppercase}
+.seg{display:flex;gap:4px;background:rgba(28,41,69,.06);padding:4px;border-radius:11px}
+.seg button{border:0;background:none;font:700 12.5px "Nunito Sans";color:var(--m);padding:6px 12px;border-radius:8px;cursor:pointer}
+.seg button.on{background:#fff;color:var(--n);box-shadow:0 2px 6px -2px rgba(28,41,69,.3)}
+input[type=date],select{font:600 12.5px "Nunito Sans";padding:6px 9px;border:1px solid var(--b);border-radius:9px;background:#fff;color:var(--n)}
+.res{margin-left:auto;font:600 12.5px "Nunito Sans";color:var(--m);text-align:right}
+
+/* Partial-week warning. The old dashboard silently showed a 4-day week next to
+   7-day weeks; this makes that impossible to miss. */
+.warn{display:flex;gap:10px;align-items:flex-start;background:rgba(180,105,14,.09);border:1px solid rgba(180,105,14,.28);border-radius:12px;padding:11px 14px;margin-bottom:14px;font:600 12.5px/1.5 "Nunito Sans";color:#7a4708}
+.warn b{color:#5e3606}
+.warn .ic{font-size:14px;line-height:1.2}
+
+.k4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+.kpi{padding:16px 18px}
+.kpi .t{font:800 11px "Nunito Sans";letter-spacing:1px;text-transform:uppercase;color:var(--m)}
+.kpi .v{font:900 30px Merriweather;margin:6px 0}
+.chip{font:800 12px "Nunito Sans";padding:3px 9px;border-radius:20px;white-space:nowrap}
+.up{background:rgba(14,159,110,.12);color:var(--g)}
+.dn{background:rgba(176,0,32,.1);color:var(--r)}
+.fl{background:rgba(90,107,134,.12);color:var(--m)}
+.br{background:rgba(255,183,3,.2);color:#8a6100}
+.nb{background:rgba(33,158,188,.14);color:#12657d}
+.frm{font:600 12px "Nunito Sans";color:var(--m);margin-left:8px}
+
+.pan{display:none}
+.pan.on{display:block}
+.card{padding:20px 22px;margin-bottom:16px}
+.card h2{font:800 17px Merriweather;margin:0 0 4px;border-left:4px solid var(--y);padding-left:11px}
+.sub{font:600 12.5px "Nunito Sans";color:var(--m);margin:0 0 14px;padding-left:15px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font:600 13px "Nunito Sans"}
+th{text-align:right;font:800 10.5px "Nunito Sans";letter-spacing:.6px;text-transform:uppercase;color:var(--m);padding:8px 10px;border-bottom:1px solid var(--b);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+td{padding:9px 10px;border-bottom:1px solid rgba(223,227,236,.6);text-align:right;white-space:nowrap}
+td:first-child{text-align:left}
+td.q{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
+td.q2{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--m)}
+.p{color:var(--m)}
+
+.bar{height:12px;background:rgba(28,41,69,.08);border-radius:8px;overflow:hidden;margin:6px 0}
+.bar span{display:block;height:100%}
+.by span{background:linear-gradient(90deg,var(--y),#ffcf4d)}
+.bn span{background:linear-gradient(90deg,var(--n),var(--n2))}
+.bt span{background:linear-gradient(90deg,var(--teal),#7fc9dd)}
+.brow{display:grid;grid-template-columns:130px 1fr auto;gap:12px;align-items:center;margin:8px 0;font:700 13px "Nunito Sans"}
+
+.note{background:rgba(28,41,69,.045);border:1px solid var(--b);border-radius:12px;padding:13px 15px;font:600 12.5px/1.5 "Nunito Sans";color:var(--m);margin-top:14px}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px 15px}
+.filters button{border:1px solid var(--b);background:#fff;color:var(--m);font:700 12px "Nunito Sans";padding:5px 12px;border-radius:9px;cursor:pointer}
+.filters button.on{background:var(--n);color:#fff;border-color:var(--n)}
+.foot{font:600 11.5px/1.6 "Nunito Sans";color:var(--m);text-align:center;margin-top:20px;opacity:.85}
+
+.load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--s);z-index:9}
+.lc{font:700 15px "Nunito Sans";color:var(--m);display:flex;flex-direction:column;gap:16px;align-items:center;text-align:center;padding:20px}
+.sp{width:34px;height:34px;border:3px solid rgba(28,41,69,.15);border-top-color:var(--n);border-radius:50%;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+@media(max-width:900px){.g3{grid-template-columns:1fr}}
+@media(max-width:760px){.k4{grid-template-columns:repeat(2,1fr)}.g2{grid-template-columns:1fr}.res{margin-left:0;text-align:left;width:100%}}
+</style>
+</head>
+<body>
+<div id="load" class="load"><div class="lc"><div class="sp"></div>Loading live Search Console data…</div></div>
+<div class="w">
+  <div class="top">
+    <div class="rw"><span>COVU</span><span class="u" id="prop">www.covu.com</span></div>
+    <h1>SEO &amp; AEO Performance</h1>
+    <div class="mt" id="mt"></div>
+  </div>
+
+  <nav class="tabs g" id="tabs"></nav>
+
+  <div class="ctrl g">
+    <span class="lab">Range</span>
+    <div class="seg" id="seg"></div>
+    <input type="date" id="d0"><span style="color:var(--m)">→</span><input type="date" id="d1">
+    <span class="lab">Compare</span>
+    <select id="cmp">
+      <option value="prev">vs previous period</option>
+      <option value="year">vs previous year</option>
+      <option value="none">none</option>
+    </select>
+    <span class="res" id="res"></span>
+  </div>
+
+  <div id="partial"></div>
+  <div class="k4" id="k4"></div>
+
+  <section class="pan on" id="p-overview"></section>
+  <section class="pan" id="p-queries"></section>
+  <section class="pan" id="p-pages"></section>
+  <section class="pan" id="p-blog"></section>
+  <section class="pan" id="p-aeo"></section>
+
+  <div class="foot" id="foot"></div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
