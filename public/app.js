@@ -471,10 +471,24 @@ function renderPages(w) {
     + pairTable(pairs, 25) + '</div>';
 }
 
-/* The blog tab. The old build showed four KPIs and a list of 15 queries with a
- * "full range-control coming next" note. blog.covu.com is its own Search Console
- * property, so it gets its own week index and its own complete-week logic. */
-function renderBlog() {
+/* blog.covu.com is a separate Search Console property with its own, much
+ * shorter history (it only starts in March 2026), so its week indices do not
+ * line up with the main site's. Translate the selected window by DATE instead,
+ * which is what makes the range buttons actually drive this tab. */
+function blogWindowFor(startDate, endDate) {
+  var b = D.blog;
+  var first = -1, last = -1;
+  for (var i = 0; i < b.weeks.length; i++) {
+    if (first < 0 && b.weeks[i] >= startDate) first = i;
+    if (b.weeks[i] <= endDate) last = i;
+  }
+  if (first < 0 || last < 0 || last < first) return null;
+  return { a: first, b: last };
+}
+
+/* The old build showed four KPIs and a list of 15 queries with a "full
+ * range-control coming next" note. */
+function renderBlog(w) {
   var b = D.blog;
   if (!b || !b.weeks.length) {
     E('p-blog').innerHTML = '<div class="card g"><h2>Blog</h2>'
@@ -482,17 +496,31 @@ function renderBlog() {
     return;
   }
 
-  /* The blog property only started collecting in March, so a fixed 13-week
-   * window leaves no room for a comparison period. Halve the available history
-   * instead, so the window and its comparison both fit. */
-  var last = b.lastCompleteWeek;
-  var span = Math.min(13, Math.max(4, Math.floor((last + 1) / 2)));
-  var a = Math.max(0, last - span + 1);
-  var pa = Math.max(0, a - span), pb = a - 1;
-  var hasCompare = a - span >= 0;
+  var win = blogWindowFor(D.weeks[w.a], D.weeks[w.b]);
+  if (!win) {
+    E('p-blog').innerHTML = '<div class="card g"><h2>Blog</h2><div class="note">'
+      + 'No blog data in the selected range. ' + esc(D.meta.blogProperty || 'blog.covu.com')
+      + ' only has Search Console history from <b>' + fmtDate(b.weeks[0]) + '</b> onwards.'
+      + '</div></div>';
+    return;
+  }
+  var a = win.a, last = win.b;
 
+  /* The range may start before the blog property existed, in which case the
+   * window is shorter than the one selected — say so rather than let the
+   * numbers look like a like-for-like. */
+  var truncated = D.weeks[w.a] < b.weeks[0];
+  var selectedWeeks = w.b - w.a + 1;
+  var actualWeeks = last - a + 1;
+
+  var cmpWin = w.valid ? blogWindowFor(D.weeks[w.pa], D.weeks[w.pb]) : null;
+  var hasCompare = !!cmpWin;
   var now = sumTotals(b.totals, a, last);
-  var before = hasCompare ? sumTotals(b.totals, pa, pb) : { c: 0, i: 0, ct: 0, po: 0 };
+  var before = hasCompare ? sumTotals(b.totals, cmpWin.a, cmpWin.b) : { c: 0, i: 0, ct: 0, po: 0 };
+  /* An unequal comparison window would overstate growth; flag when that is the
+   * case rather than quietly comparing 13 weeks against 4. */
+  var cmpWeeks = hasCompare ? cmpWin.b - cmpWin.a + 1 : 0;
+  var cmpUneven = hasCompare && cmpWeeks !== actualWeeks;
 
   var impr = [], labels = [], flags = [];
   for (var i = a; i <= last; i++) {
@@ -527,9 +555,22 @@ function renderBlog() {
     + kpi('Blog position', F1(now.po), hasCompare ? posChip(now.po, before.po) : noCmp, hasCompare ? F1(before.po) : 'no prior window')
     + '</div>'
 
+    + (truncated || cmpUneven
+      ? '<div class="warn"><span class="ic">⚠</span><span>'
+        + (truncated
+          ? 'The blog property only has history from <b>' + fmtDate(b.weeks[0]) + '</b>, so this window covers <b>'
+            + actualWeeks + '</b> of the <b>' + selectedWeeks + '</b> weeks you selected. '
+          : '')
+        + (cmpUneven
+          ? 'The comparison period covers <b>' + cmpWeeks + '</b> weeks against this window\'s <b>'
+            + actualWeeks + '</b>, so the percentages below compare unequal spans — read them as direction, not size.'
+          : '')
+        + '</span></div>'
+      : '')
+
     + '<div class="card g"><h2>Blog impressions by week</h2>'
     + '<div class="sub">' + esc(D.meta.blogProperty || 'blog.covu.com') + ' · '
-    + fmtDate(b.weeks[a]) + ' → ' + fmtDate(weekEnd(b.weeks[last]))
+    + fmtDate(b.weeks[a]) + ' → ' + fmtDate(weekEnd(b.weeks[last])) + ' · ' + actualWeeks + ' weeks'
     + (flags.some(Boolean) ? ' · hollow dot = partial week' : '') + '</div>'
     + chart(impr, labels, flags, '#11426B') + '</div>'
 
@@ -711,7 +752,7 @@ function render() {
   renderOverview(w, now, before, queries);
   renderQueries(queries);
   renderPages(w);
-  renderBlog();
+  renderBlog(w);
   renderAEO(w, queries);
 
   E('foot').innerHTML = 'Source: Google Search Console + GA4 via the nightly pipeline into Google Sheets · '
