@@ -103,6 +103,19 @@ function kpi(title, value, chip, from) {
     + '<div>' + chip + '<span class="frm">from ' + from + '</span></div></div>';
 }
 
+/* Totals across an already-aggregated list of queries or pages. Query- and
+ * page-level rows only cover part of site traffic (Search Console withholds
+ * rare queries), so these deliberately do not match the site totals. */
+function sumAgg(rows) {
+  var c = 0, imp = 0, weighted = 0;
+  for (var i = 0; i < rows.length; i++) {
+    c += rows[i].c;
+    imp += rows[i].i;
+    weighted += rows[i].po * rows[i].i;
+  }
+  return { c: c, i: imp, ct: imp ? c / imp * 100 : 0, po: imp ? weighted / imp : 0 };
+}
+
 /* ---------- range maths ---------- */
 
 /* The window never runs past the last COMPLETE week unless the user drags the
@@ -453,11 +466,50 @@ function renderQueries(queries) {
   };
 }
 
+/* The Search Console property is a domain property, so it covers every
+ * subdomain — news, podcast, go, my and friends, not just www. Rolling the
+ * pages up by host makes that visible instead of leaving it buried in a URL
+ * list, and it is where the wasted impressions show up. */
+function hostTotals(pages) {
+  var byHost = {};
+  pages.forEach(function (p) {
+    var m = String(p.k).match(/^https?:\/\/([^/]+)/);
+    var host = m ? m[1] : '(other)';
+    var e = byHost[host];
+    if (!e) { e = { k: host, c: 0, i: 0, w: 0 }; byHost[host] = e; }
+    e.c += p.c; e.i += p.i; e.w += p.po * p.i;
+  });
+  var out = [];
+  for (var h in byHost) {
+    var e = byHost[h];
+    e.ct = e.i ? e.c / e.i * 100 : 0;
+    e.po = e.i ? e.w / e.i : 0;
+    out.push(e);
+  }
+  return out.sort(function (a, b) { return b.i - a.i; });
+}
+
 function renderPages(w) {
   var pages = aggregate(D.pStr, D.pW, w.a, w.b, false)
     .sort(function (a, b) { return b.c - a.c; });
   var pairs = (D.queryPage || []).slice(0, 25);
-  E('p-pages').innerHTML = '<div class="card g"><h2>Top pages</h2>'
+  var hosts = hostTotals(pages);
+  /* Hosts pulling real reach but almost no clicks. */
+  var wasted = hosts.filter(function (h) { return h.i >= 500 && h.ct < 0.5; });
+
+  E('p-pages').innerHTML = '<div class="card g"><h2>By subdomain</h2>'
+    + '<div class="sub">The property covers every host under ' + esc(D.meta.property)
+    + ' · ranked by impressions</div>'
+    + dimTable(hosts, 'Host')
+    + (wasted.length
+      ? '<div class="note">' + wasted.map(function (h) {
+        return '<b>' + esc(h.k) + '</b> took ' + F(h.i) + ' impressions for ' + F(h.c)
+          + ' clicks (' + F1(h.ct) + '% CTR)';
+      }).join(', ') + ' — reach that is being shown and ignored. Worth deciding whether those hosts '
+        + 'should rank at all, or whether their titles and snippets need work.</div>'
+      : '')
+    + '</div>'
+    + '<div class="card g"><h2>Top pages</h2>'
     + '<div class="sub">Ranked by clicks in the selected range</div>'
     + metricTable(pages, 'page', 40) + '</div>'
     + '<div class="g2">'
@@ -515,8 +567,6 @@ function renderBlog(w) {
 
   var cmpWin = w.valid ? blogWindowFor(D.weeks[w.pa], D.weeks[w.pb]) : null;
   var hasCompare = !!cmpWin;
-  var now = sumTotals(b.totals, a, last);
-  var before = hasCompare ? sumTotals(b.totals, cmpWin.a, cmpWin.b) : { c: 0, i: 0, ct: 0, po: 0 };
   /* An unequal comparison window would overstate growth; flag when that is the
    * case rather than quietly comparing 13 weeks against 4. */
   var cmpWeeks = hasCompare ? cmpWin.b - cmpWin.a + 1 : 0;
@@ -546,16 +596,11 @@ function renderBlog(w) {
 
   var filterButtons = [['all', 'All'], ['brand', 'Branded'], ['nonbrand', 'Non-branded'], ['questions', 'Questions']];
 
-  var noCmp = '<span class="chip fl">—</span>';
+  /* No KPI row here — the shared row at the top of the page now shows blog
+   * figures whenever this tab is active, so repeating them was two sets of
+   * cards disagreeing about which numbers mattered. */
   E('p-blog').innerHTML =
-    '<div class="k4">'
-    + kpi('Blog clicks', F(now.c), hasCompare ? pctChip(now.c, before.c) : noCmp, hasCompare ? F(before.c) : 'no prior window')
-    + kpi('Blog impressions', F(now.i), hasCompare ? pctChip(now.i, before.i) : noCmp, hasCompare ? F(before.i) : 'no prior window')
-    + kpi('Blog CTR', F1(now.ct) + '%', hasCompare ? ptChip(now.ct, before.ct) : noCmp, hasCompare ? F1(before.ct) + '%' : 'no prior window')
-    + kpi('Blog position', F1(now.po), hasCompare ? posChip(now.po, before.po) : noCmp, hasCompare ? F1(before.po) : 'no prior window')
-    + '</div>'
-
-    + (truncated || cmpUneven
+    (truncated || cmpUneven
       ? '<div class="warn"><span class="ic">⚠</span><span>'
         + (truncated
           ? 'The blog property only has history from <b>' + fmtDate(b.weeks[0]) + '</b>, so this window covers <b>'
@@ -717,6 +762,132 @@ function renderAEO(w, queries) {
     + hsBlock;
 }
 
+/* ---------- KPI row ---------- */
+
+var CTX = null;   // last render's context, so the KPI row can redraw on tab change
+
+/* Four cards whose meaning follows the active tab. Each set names its own scope
+ * in the card titles so two tabs can never show the same four numbers under the
+ * same four labels. */
+function renderKpis() {
+  if (!CTX) return;
+  var w = CTX.w, queries = CTX.queries;
+  var noChip = '<span class="chip fl">—</span>';
+  var noFrom = w.why === 'history' ? 'no prior window' : 'comparison off';
+
+  function four(labels, nowVals, beforeVals, kinds, valid) {
+    var out = '';
+    for (var i = 0; i < labels.length; i++) {
+      var chip;
+      if (!valid) chip = noChip;
+      else if (kinds[i] === 'pts') chip = ptChip(nowVals[i], beforeVals[i]);
+      else if (kinds[i] === 'pos') chip = posChip(nowVals[i], beforeVals[i]);
+      else chip = pctChip(nowVals[i], beforeVals[i]);
+      var shown = kinds[i] === 'int' ? F(nowVals[i])
+        : kinds[i] === 'pts' ? F1(nowVals[i]) + '%' : F1(nowVals[i]);
+      var from = !valid ? noFrom
+        : kinds[i] === 'int' ? F(beforeVals[i])
+          : kinds[i] === 'pts' ? F1(beforeVals[i]) + '%' : F1(beforeVals[i]);
+      out += kpi(labels[i], shown, chip, from);
+    }
+    return out;
+  }
+
+  if (TAB === 'queries' || TAB === 'pages') {
+    var isQ = TAB === 'queries';
+    var nowRows = isQ ? queries : aggregate(D.pStr, D.pW, w.a, w.b, false);
+    var n = sumAgg(nowRows);
+    var b = w.valid
+      ? sumAgg(aggregate(isQ ? D.qStr : D.pStr, isQ ? D.qW : D.pW, w.pa, w.pb, false))
+      : { c: 0, i: 0, ct: 0, po: 0 };
+    E('k4').innerHTML = four(
+      [(isQ ? 'Query' : 'Page') + ' clicks', (isQ ? 'Query' : 'Page') + ' impressions', 'CTR', 'Avg. position'],
+      [n.c, n.i, n.ct, n.po], [b.c, b.i, b.ct, b.po],
+      ['int', 'int', 'pts', 'pos'], w.valid,
+    );
+    /* These will not reconcile with the Overview, and the reason differs by
+     * dimension — so say which one applies rather than printing a percentage
+     * that can exceed 100 and look like a bug. */
+    E('kpiNote').innerHTML = '<div class="note" style="margin:0 0 16px">'
+      + F(nowRows.length) + ' ' + (isQ ? 'queries' : 'pages') + ' in range. '
+      + (isQ
+        ? 'These total <b>' + F1(CTX.now.c ? n.c / CTX.now.c * 100 : 0) + '%</b> of the site\'s <b>'
+          + F(CTX.now.c) + '</b> clicks — Search Console withholds rare queries to protect privacy, '
+          + 'so query rows always add up to less than the Overview.'
+        : 'Page impressions exceed the site total because Search Console counts them differently: '
+          + 'one query showing two of your URLs is one impression for the property but one for each '
+          + 'page. The property is <b>' + esc(D.meta.property) + '</b>, which spans every subdomain '
+          + '— see the breakdown below.')
+      + '</div>';
+    return;
+  }
+
+  if (TAB === 'blog') {
+    var bd = D.blog;
+    var bw = (bd && bd.weeks.length) ? blogWindowFor(D.weeks[w.a], D.weeks[w.b]) : null;
+    if (!bw) {
+      E('k4').innerHTML = '';
+      E('kpiNote').innerHTML = '';
+      return;
+    }
+    var cw = w.valid ? blogWindowFor(D.weeks[w.pa], D.weeks[w.pb]) : null;
+    var bn = sumTotals(bd.totals, bw.a, bw.b);
+    var bb = cw ? sumTotals(bd.totals, cw.a, cw.b) : { c: 0, i: 0, ct: 0, po: 0 };
+    E('k4').innerHTML = four(
+      ['Blog clicks', 'Blog impressions', 'Blog CTR', 'Blog position'],
+      [bn.c, bn.i, bn.ct, bn.po], [bb.c, bb.i, bb.ct, bb.po],
+      ['int', 'int', 'pts', 'pos'], !!cw,
+    );
+    E('kpiNote').innerHTML = '<div class="note" style="margin:0 0 16px">'
+      + esc(D.meta.blogProperty || 'blog.covu.com') + ' is a separate Search Console property, so '
+      + 'these are its own numbers — not a slice of the site totals on Overview.</div>';
+    return;
+  }
+
+  if (TAB === 'aeo') {
+    var ga = D.ga || { channels: [], rows: [], aiChannel: -1 };
+    var aiNow = 0, aiBefore = 0, allNow = 0;
+    if (ga.aiChannel >= 0) {
+      ga.rows.forEach(function (r) {
+        if (r[1] >= w.a && r[1] <= w.b) {
+          allNow += r[2];
+          if (r[0] === ga.aiChannel) aiNow += r[2];
+        } else if (w.valid && r[1] >= w.pa && r[1] <= w.pb && r[0] === ga.aiChannel) {
+          aiBefore += r[2];
+        }
+      });
+    }
+    var qq = queries.filter(function (q) { return q.question; });
+    var qqImpr = qq.reduce(function (a, q) { return a + q.i; }, 0);
+    var gapCount = queries.filter(function (q) {
+      return q.question && q.i >= 30 && q.ct < 1;
+    }).length;
+    E('k4').innerHTML =
+      kpi('AI assistant sessions', F(aiNow),
+        w.valid ? pctChip(aiNow, aiBefore) : noChip, w.valid ? F(aiBefore) : noFrom)
+      + kpi('AI share of traffic', (allNow ? F1(aiNow / allNow * 100) : '0') + '%',
+        '<span class="chip fl">of ' + F(allNow) + '</span>', 'GA4 sessions')
+      + kpi('Question impressions', F(qqImpr),
+        '<span class="chip fl">' + F(qq.length) + ' queries</span>', 'question-shaped')
+      + kpi('Zero-click gap', F(gapCount),
+        '<span class="chip fl">30+ impr, &lt;1% CTR</span>', 'queries to target');
+    E('kpiNote').innerHTML = '<div class="note" style="margin:0 0 16px">'
+      + 'AI assistant sessions are the only first-party answer-engine measure available. '
+      + 'The other three are Search Console proxies: question-shaped queries and those earning '
+      + 'impressions without clicks.</div>';
+    return;
+  }
+
+  // Overview — the site-wide totals.
+  var now = CTX.now, before = CTX.before;
+  E('k4').innerHTML = four(
+    ['Total clicks', 'Impressions', 'Avg. CTR', 'Avg. position'],
+    [now.c, now.i, now.ct, now.po], [before.c, before.i, before.ct, before.po],
+    ['int', 'int', 'pts', 'pos'], w.valid,
+  );
+  E('kpiNote').innerHTML = '';
+}
+
 /* ---------- shell ---------- */
 
 function render() {
@@ -738,15 +909,12 @@ function render() {
     + (w.valid ? ' · ' + (COMPARE === 'year' ? 'vs last year' : 'vs previous period')
       : (w.why === 'history' ? ' · no comparison — not enough history' : ' · no comparison'));
 
-  /* Never print "from 0" for an absent comparison; 0 is a real number and
-   * reads as a prior period with no traffic. */
-  var noCmpChip = '<span class="chip fl">—</span>';
-  var noCmpFrom = w.why === 'history' ? 'no prior window' : 'comparison off';
-  E('k4').innerHTML =
-    kpi('Total clicks', F(now.c), w.valid ? pctChip(now.c, before.c) : noCmpChip, w.valid ? F(before.c) : noCmpFrom)
-    + kpi('Impressions', F(now.i), w.valid ? pctChip(now.i, before.i) : noCmpChip, w.valid ? F(before.i) : noCmpFrom)
-    + kpi('Avg. CTR', F1(now.ct) + '%', w.valid ? ptChip(now.ct, before.ct) : noCmpChip, w.valid ? F1(before.ct) + '%' : noCmpFrom)
-    + kpi('Avg. position', F1(now.po), w.valid ? posChip(now.po, before.po) : noCmpChip, w.valid ? F1(before.po) : noCmpFrom);
+  /* The KPI row lives outside the tab panels, so it has to be told which tab is
+   * showing. Left global it reads identical site-wide totals everywhere, which
+   * is misleading on Queries and Pages (they cover only part of site traffic),
+   * plainly wrong on Blog (a different property) and meaningless on AEO Lens. */
+  CTX = { w: w, now: now, before: before, queries: queries };
+  renderKpis();
 
   renderPartialNotice(w);
   renderOverview(w, now, before, queries);
@@ -789,6 +957,7 @@ function buildUI() {
     TAB = btn.dataset.t;
     document.querySelectorAll('.tab').forEach(function (b) { b.classList.toggle('on', b.dataset.t === TAB); });
     document.querySelectorAll('.pan').forEach(function (p) { p.classList.toggle('on', p.id === 'p-' + TAB); });
+    renderKpis();   // the KPI row is scoped to the active tab
   };
 
   E('seg').onclick = function (ev) {
