@@ -331,26 +331,76 @@ function buildGA(gaDaily, gaEvents, gaLanding, gaEventLanding, weekIndex) {
 async function fetchHubSpot(startDate, endDate) {
   const token = process.env.HUBSPOT_TOKEN;
   if (!token) return { connected: false, reason: 'HUBSPOT_TOKEN not set' };
+
+  const compact = (d) => d.replace(/-/g, '');
+  const url = 'https://api.hubapi.com/analytics/v2/reports/pages/total'
+    + `?start=${compact(startDate)}&end=${compact(endDate)}&limit=100`;
+
   try {
-    const url = 'https://api.hubapi.com/analytics/v2/reports/pages/total'
-      + `?start=${startDate.replace(/-/g, '')}&end=${endDate.replace(/-/g, '')}&limit=100`;
-    const res = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
-    if (!res.ok) return { connected: false, reason: `HubSpot HTTP ${res.status}` };
+    const res = await fetch(url, {
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+    });
+
+    if (!res.ok) {
+      // Surface HubSpot's own message. 403 almost always means the private app
+      // is missing the business-intelligence scope; 401 means a bad or rotated
+      // token. Without this the panel just says "HTTP 403" and stalls.
+      let detail = '';
+      try {
+        const body = await res.text();
+        const parsed = JSON.parse(body);
+        detail = parsed.message || parsed.error || body.slice(0, 200);
+      } catch { detail = ''; }
+      const hint = res.status === 403
+        ? ' — the private app is probably missing the business-intelligence (analytics read) scope'
+        : res.status === 401 ? ' — token rejected; it may have been rotated' : '';
+      return {
+        connected: false,
+        reason: `HubSpot HTTP ${res.status}${hint}${detail ? ': ' + detail : ''}`,
+      };
+    }
+
     const json = await res.json();
-    const src = json.breakdowns || json;
+
+    /* HubSpot's analytics responses have appeared in three shapes over the
+     * years: {breakdowns:{key:metrics}}, a flat {key:metrics} map, and
+     * {results:[{...}]}. Accept all three rather than silently rendering
+     * nothing when the shape is not the one guessed. */
+    let entries = [];
+    if (Array.isArray(json)) {
+      entries = json.map((v) => [v.path || v.url || v.name || v.id || '(unknown)', v]);
+    } else if (Array.isArray(json.results)) {
+      entries = json.results.map((v) => [v.path || v.url || v.name || v.id || '(unknown)', v]);
+    } else {
+      entries = Object.entries(json.breakdowns || json);
+    }
+
     const rows = [];
-    for (const [key, v] of Object.entries(src || {})) {
-      if (!v || typeof v !== 'object') continue;
+    for (const [key, v] of entries) {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      const views = int(v.rawViews ?? v.pageviews ?? v.visits ?? v.sessions);
+      const subs = int(v.submissions ?? v.formSubmissions);
+      const contacts = int(v.contacts ?? v.newContacts);
+      if (!views && !subs && !contacts) continue;
       rows.push({
-        k: key,
-        views: int(v.rawViews ?? v.pageviews),
-        subs: int(v.submissions),
-        contacts: int(v.contacts),
+        k: String(key),
+        views,
+        subs,
+        contacts,
         bounce: num(v.bounceRate) * 100,
-        time: num(v.timePerPageview),
+        time: num(v.timePerPageview ?? v.timePerSession),
       });
     }
     rows.sort((a, b) => b.views - a.views);
+
+    if (!rows.length) {
+      // Better than an empty table: name the keys we got so the shape can be fixed.
+      return {
+        connected: false,
+        reason: 'HubSpot responded but no rows matched the expected fields. Top-level keys: '
+          + Object.keys(json).slice(0, 8).join(', '),
+      };
+    }
     return { connected: true, rows: rows.slice(0, 40), start: startDate, end: endDate };
   } catch (err) {
     return { connected: false, reason: String((err && err.message) || err) };
