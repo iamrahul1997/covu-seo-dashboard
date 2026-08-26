@@ -19,6 +19,7 @@ var TABS = [
   ['pages', 'Pages'],
   ['blog', 'Blog'],
   ['aeo', 'AEO Lens'],
+  ['gads', 'Google Ads'],
 ];
 
 var RANGES = [['4', '28 days'], ['13', '3 months'], ['26', '6 months'], ['52', '12 months']];
@@ -827,6 +828,164 @@ function renderAEO(w, queries) {
     + hsBlock;
 }
 
+/* ---------- paid media ---------- */
+
+var MONEY = '$';   // Google Ads reports in the account currency
+
+/* Currency always to two places — F1 renders $139.90 as "$139.9", which reads
+ * like a truncated number rather than an amount. */
+function money(cents) {
+  return MONEY + (cents / 100).toLocaleString('en-US', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
+}
+
+/* First week the ads pipeline holds any data for. Ranges reaching back past it
+ * have no comparison to make, which is different from a comparison of zero. */
+function adsFirstWeek(table) {
+  if (!table || !table.rows.length) return null;
+  var min = table.rows[0][0];
+  for (var i = 1; i < table.rows.length; i++) if (table.rows[i][0] < min) min = table.rows[i][0];
+  return min;
+}
+
+/* Totals from a rollUpAds table over a week range.
+ * Row shape: [weekIdx, keyIdx, impressions, clicks, cents, conversions*100] */
+function adsTotals(table, a, b) {
+  var t = { i: 0, c: 0, cents: 0, conv: 0 };
+  if (!table || !table.rows) return t;
+  for (var j = 0; j < table.rows.length; j++) {
+    var r = table.rows[j];
+    if (r[0] < a || r[0] > b) continue;
+    t.i += r[2]; t.c += r[3]; t.cents += r[4]; t.conv += r[5];
+  }
+  return t;
+}
+
+function adsByKey(table, a, b) {
+  if (!table || !table.keys.length) return [];
+  var out = table.keys.map(function (k) {
+    return { k: k, i: 0, c: 0, cents: 0, conv: 0 };
+  });
+  table.rows.forEach(function (r) {
+    if (r[0] < a || r[0] > b) return;
+    var e = out[r[1]];
+    if (!e) return;
+    e.i += r[2]; e.c += r[3]; e.cents += r[4]; e.conv += r[5];
+  });
+  return out.filter(function (e) { return e.i > 0 || e.cents > 0; })
+    .sort(function (x, y) { return y.cents - x.cents; });
+}
+
+function adsSeries(table, a, b) {
+  var series = [];
+  for (var i = a; i <= b; i++) series.push(0);
+  if (!table || !table.rows) return series;
+  table.rows.forEach(function (r) {
+    if (r[0] < a || r[0] > b) return;
+    series[r[0] - a] += r[4];
+  });
+  return series.map(function (cents) { return cents / 100; });
+}
+
+function adsTable(rows, label) {
+  if (!rows.length) return '<div class="note">No spend in this range</div>';
+  return '<div class="tw"><table><thead><tr><th>' + label + '</th><th>Spend</th><th>Impr.</th>'
+    + '<th>Clicks</th><th>CTR</th><th>CPC</th><th>Conv.</th><th>Cost / conv.</th>'
+    + '</tr></thead><tbody>'
+    + rows.map(function (r) {
+      var conv = r.conv / 100;
+      return '<tr><td class="q" title="' + esc(r.k) + '">' + esc(r.k) + '</td>'
+        + '<td>' + money(r.cents) + '</td>'
+        + '<td>' + F(r.i) + '</td><td>' + F(r.c) + '</td>'
+        + '<td>' + F1(r.i ? r.c / r.i * 100 : 0) + '%</td>'
+        + '<td>' + (r.c ? money(r.cents / r.c) : '—') + '</td>'
+        + '<td>' + F1(conv) + '</td>'
+        + '<td class="p">' + (conv ? money(r.cents / conv) : '—') + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+function renderGoogleAds(w, queries) {
+  var g = (D.ads && D.ads.google) || null;
+  if (!g || !g.campaigns || !g.campaigns.keys.length) {
+    E('p-gads').innerHTML = '<div class="card g"><h2>Google Ads</h2>'
+      + '<div class="note">No ads data in the sheet yet. The Google Ads script writes '
+      + '<b>ads_google_daily</b> and <b>ads_google_keyword</b>; once it has run, this tab fills in.'
+      + '</div></div>';
+    return;
+  }
+
+  var labels = [], flags = [];
+  for (var i = w.a; i <= w.b; i++) {
+    labels.push('Week of ' + fmtDate(D.weeks[i]));
+    flags.push(D.weekDays[i] < 7);
+  }
+  var spend = adsSeries(g.campaigns, w.a, w.b);
+  var campaigns = adsByKey(g.campaigns, w.a, w.b);
+
+  /* Ads have no reporting lag, so the pipeline usually holds days beyond the
+   * organic window. Say so rather than letting the difference look like a drop. */
+  var beyond = g.through && g.through > D.meta.dataThrough
+    ? '<div class="note">Ads data runs to <b>' + fmtDate(g.through) + '</b>, but the weeks here '
+      + 'align to the organic window ending <b>' + fmtDate(D.meta.dataThrough) + '</b> so paid and '
+      + 'organic stay comparable. The most recent days are held back, not missing.</div>'
+    : '';
+
+  /* Brand overlap — only answerable now that paid and organic sit together.
+   * Presented as a question, not a verdict: defending the brand SERP against
+   * competitors is a legitimate reason to pay for clicks you also rank for. */
+  var brandOrganic = 0;
+  queries.forEach(function (q) { if (q.brand) brandOrganic += q.c; });
+  var paidClicks = campaigns.reduce(function (a, r) { return a + r.c; }, 0);
+  var paidCents = campaigns.reduce(function (a, r) { return a + r.cents; }, 0);
+  var brandCard = '';
+  if (paidClicks && brandOrganic) {
+    var share = paidClicks / (paidClicks + brandOrganic) * 100;
+    brandCard = '<div class="card g"><h2>Brand overlap</h2>'
+      + '<div class="sub">Paid and organic clicks on branded terms, same range</div>'
+      + '<div class="brow"><span>Organic (free)</span><div class="bar by"><span style="width:'
+      + (brandOrganic / (brandOrganic + paidClicks) * 100).toFixed(1) + '%"></span></div>'
+      + '<span>' + F(brandOrganic) + '</span></div>'
+      + '<div class="brow"><span>Paid</span><div class="bar bt"><span style="width:'
+      + share.toFixed(1) + '%"></span></div><span>' + F(paidClicks) + '</span></div>'
+      + '<div class="note">The one live campaign bids on brand terms — <b>covu</b>, '
+      + '<b>covu insurance</b> — where the site already ranks first organically. Paid supplied '
+      + '<b>' + F1(share) + '%</b> of branded clicks for <b>' + money(paidCents) + '</b>; the other '
+      + '<b>' + F(brandOrganic) + '</b> cost nothing. That is worth paying for if the goal is '
+      + 'holding the top of the page against competitors bidding on your name — worth cutting if '
+      + 'it is not. The data cannot settle which; it can only price the question.</div></div>';
+  }
+
+  var stale = '';
+  if (g.lastRun) {
+    var ageDays = Math.floor((Date.now() - new Date(g.lastRun).getTime()) / 86400000);
+    if (ageDays >= 2) {
+      stale = '<div class="warn"><span class="ic">⚠</span><span>The ads pipeline last ran <b>'
+        + ageDays + ' days ago</b> (' + esc(String(g.lastRun).slice(0, 10)) + '). Check the daily '
+        + 'schedule on the Google Ads script — these numbers are going stale.</span></div>';
+    }
+  }
+
+  E('p-gads').innerHTML = stale
+    + '<div class="card g"><h2>Weekly spend</h2>'
+    + '<div class="sub">' + campaigns.length + ' campaign'
+    + (campaigns.length === 1 ? '' : 's') + ' · ' + spend.length + ' weeks'
+    + (flags.some(Boolean) ? ' · hollow dot = partial week' : '') + '</div>'
+    + chart(spend, labels, flags, '#1a56c4')
+    + beyond + '</div>'
+    + '<div class="card g"><h2>Campaigns</h2>'
+    + '<div class="sub">Ranked by spend in the selected range</div>'
+    + adsTable(campaigns, 'Campaign') + '</div>'
+    + brandCard
+    + '<div class="card g"><h2>Keywords</h2>'
+    + '<div class="sub">Snapshot of the pipeline\'s trailing window'
+    + (g.through ? ' · through ' + fmtDate(g.through) : '')
+    + ' · not filtered by the range above</div>'
+    + adsTable((g.keywords || []).map(function (k) {
+      return { k: k.k + (k.m ? '  · ' + k.m.toLowerCase() : ''), i: k.i, c: k.c, cents: Math.round(k.cost * 100), conv: Math.round(k.conv * 100) };
+    }), 'Keyword') + '</div>';
+}
+
 /* ---------- KPI row ---------- */
 
 var CTX = null;   // last render's context, so the KPI row can redraw on tab change
@@ -943,6 +1102,45 @@ function renderKpis() {
     return;
   }
 
+  if (TAB === 'gads') {
+    var g = (D.ads && D.ads.google) || null;
+    var t = g ? adsTotals(g.campaigns, w.a, w.b) : { i: 0, c: 0, cents: 0, conv: 0 };
+    /* Only compare when the pipeline actually held data for the earlier window.
+     * Otherwise every figure reads "new", which implies growth from nothing
+     * rather than an absence of history. */
+    var first = g ? adsFirstWeek(g.campaigns) : null;
+    var canCompare = w.valid && first !== null && w.pa >= first;
+    var p = canCompare ? adsTotals(g.campaigns, w.pa, w.pb) : { i: 0, c: 0, cents: 0, conv: 0 };
+    var cpc = t.c ? t.cents / t.c : 0, pcpc = p.c ? p.cents / p.c : 0;
+    var cpa = t.conv ? t.cents / (t.conv / 100) : 0, pcpa = p.conv ? p.cents / (p.conv / 100) : 0;
+    var adsFrom = canCompare ? null : 'no ads history';
+    /* Spend and cost-per rise and fall for opposite reasons, so a rising CPC is
+     * flagged as bad while rising spend is left neutral — the chip colour should
+     * not imply that spending more is a win. */
+    E('k4').innerHTML =
+      kpi('Spend', money(t.cents), canCompare ? pctChip(t.cents, p.cents) : noChip,
+        canCompare ? money(p.cents) : (adsFrom || noFrom))
+      + kpi('Clicks', F(t.c), canCompare ? pctChip(t.c, p.c) : noChip,
+        canCompare ? F(p.c) : (adsFrom || noFrom))
+      + kpi('Cost per click', cpc ? money(cpc) : '—',
+        canCompare && pcpc ? posChip(cpc, pcpc) : noChip,
+        canCompare && pcpc ? money(pcpc) : (adsFrom || noFrom))
+      + kpi('Conversions', F1(t.conv / 100), canCompare ? pctChip(t.conv, p.conv) : noChip,
+        canCompare ? F1(p.conv / 100) : (adsFrom || noFrom));
+    E('kpiNote').innerHTML = '<div class="note" style="margin:0 0 16px">'
+      + (cpa ? 'Cost per conversion <b>' + money(cpa) + '</b>'
+        + (canCompare && pcpa ? ', from ' + money(pcpa) + ' in the comparison window' : '') + '. '
+        : 'No conversions recorded in this range. ')
+      + (adsFrom && g && g.campaigns.rows.length
+        ? 'The pipeline holds ads data from <b>' + fmtDate(D.weeks[first]) + '</b>, which does not '
+          + 'reach the comparison window, so no change is shown. It will once the daily job has '
+          + 'been running longer. '
+        : '')
+      + 'Spend is in the Google Ads account currency. Cost-per-click is shown green when it '
+      + 'falls, since cheaper clicks are the win — unlike the other three, where up is up.</div>';
+    return;
+  }
+
   // Overview — the site-wide totals.
   var now = CTX.now, before = CTX.before;
   E('k4').innerHTML = four(
@@ -987,6 +1185,7 @@ function render() {
   renderPages(w);
   renderBlog(w);
   renderAEO(w, queries);
+  renderGoogleAds(w, queries);
 
   E('foot').innerHTML = 'Source: Google Search Console + GA4 via the nightly pipeline into Google Sheets · '
     + esc(D.meta.property) + ' · ' + D.weeks.length + ' weeks held'

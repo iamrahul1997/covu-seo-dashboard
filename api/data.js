@@ -39,7 +39,15 @@ const TABS = {
   ga_events: '1863466715',
   ga_landing: '1106334035',
   ga_event_landing: '2051391862',
+  ads_google_daily: '694389940',
+  ads_google_keyword: '1327370572',
 };
+
+/* Tabs written by the ads pipeline rather than the original GSC job. They may
+ * not exist yet, or may be recreated with new gids, and neither should take the
+ * whole dashboard down — the organic data is the part people rely on. */
+const OPTIONAL_TABS = new Set(['ads_google_daily', 'ads_google_keyword',
+  'ads_meta_daily', 'ads_meta_ad']);
 
 // ---------- CSV ----------
 
@@ -88,10 +96,15 @@ async function fetchTab(name) {
     const csv = await get(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`);
     return objectify(parseCSV(csv));
   } catch (err) {
-    // A renamed or recreated tab changes its gid; fall back to lookup by name.
-    const csv = await get(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq`
-      + `?tqx=out:csv&headers=1&sheet=${encodeURIComponent(name)}`);
-    return objectify(parseCSV(csv));
+    try {
+      // A renamed or recreated tab changes its gid; fall back to lookup by name.
+      const csv = await get(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq`
+        + `?tqx=out:csv&headers=1&sheet=${encodeURIComponent(name)}`);
+      return objectify(parseCSV(csv));
+    } catch (err2) {
+      if (OPTIONAL_TABS.has(name)) return [];
+      throw new Error(`${name}: ${err2.message}`);
+    }
   }
 }
 
@@ -323,6 +336,61 @@ function buildGA(gaDaily, gaEvents, gaLanding, gaEventLanding, weekIndex) {
   };
 }
 
+// ---------- paid media ----------
+
+/* Ads spend rolled into the same weekly index as organic, so one set of range
+ * buttons drives both. Money is carried as integer cents and conversions as
+ * hundredths — decimals accumulate float error across a quarter of daily rows.
+ */
+function rollUpAds(rows, weekIndex, keyField) {
+  const names = [], idx = new Map(), cells = new Map();
+  for (const r of rows) {
+    const d = day(r.date);
+    if (!d) continue;
+    const wi = weekIndex.get(weekOf(d));
+    if (wi === undefined) continue;
+    const name = String(r[keyField] || '').trim() || '(unattributed)';
+    let ci = idx.get(name);
+    if (ci === undefined) { ci = names.length; idx.set(name, ci); names.push(name); }
+    const id = wi + ' ' + ci;
+    let b = cells.get(id);
+    if (!b) { b = [wi, ci, 0, 0, 0, 0]; cells.set(id, b); }
+    b[2] += int(r.impressions);
+    b[3] += int(r.clicks);
+    b[4] += Math.round(num(r.cost !== undefined ? r.cost : r.spend) * 100);
+    b[5] += Math.round(num(r.conversions !== undefined ? r.conversions : r.leads) * 100);
+  }
+  return {
+    keys: names,
+    rows: [...cells.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]),
+  };
+}
+
+/* Keywords have no useful week-by-week shape at this spend level, so they ship
+ * as one snapshot over whatever window the pipeline last wrote. */
+function keywordSnapshot(rows, limit) {
+  const agg = new Map();
+  for (const r of rows) {
+    const k = String(r.keyword || '').trim();
+    if (!k) continue;
+    const match = String(r.match_type || '').trim();
+    const id = k + '|' + match;
+    let e = agg.get(id);
+    if (!e) { e = { k, m: match, camp: String(r.campaign || '').trim(), c: 0, i: 0, cost: 0, conv: 0 }; agg.set(id, e); }
+    e.i += int(r.impressions);
+    e.c += int(r.clicks);
+    e.cost += num(r.cost);
+    e.conv += num(r.conversions);
+  }
+  const out = [...agg.values()].map((e) => ({
+    k: e.k, m: e.m, camp: e.camp, c: e.c, i: e.i,
+    cost: Math.round(e.cost * 100) / 100,
+    conv: Math.round(e.conv * 100) / 100,
+  }));
+  out.sort((a, b) => b.cost - a.cost || b.c - a.c);
+  return limit ? out.slice(0, limit) : out;
+}
+
 // ---------- HubSpot ----------
 
 // Optional. Set HUBSPOT_TOKEN (a private-app token with content analytics read)
@@ -487,6 +555,25 @@ async function build() {
       country: dimWeekly(t.blog_country, 'country', blogIdx, 15),
     },
     ga: buildGA(t.ga_daily, t.ga_events, t.ga_landing, t.ga_event_landing, wIdx),
+    ads: {
+      google: {
+        campaigns: rollUpAds(t.ads_google_daily, wIdx, 'campaign'),
+        keywords: keywordSnapshot(t.ads_google_keyword, 100),
+        lastRun: metaKV.ads_google_last_run || null,
+        through: maxDay(t.ads_google_daily) || null,
+      },
+      /* Meta's tabs do not exist yet. They are read through the same shape, so
+       * adding their gids to TABS is the only change needed once the Apps
+       * Script has run — deliberately not added with a blank gid, because
+       * /export with an empty gid silently returns the FIRST sheet. */
+      meta: {
+        campaigns: rollUpAds(t.ads_meta_daily || [], wIdx, 'campaign'),
+        adsets: rollUpAds(t.ads_meta_daily || [], wIdx, 'adset'),
+        creatives: rollUpAds(t.ads_meta_ad || [], wIdx, 'ad'),
+        lastRun: metaKV.ads_meta_last_run || null,
+        through: maxDay(t.ads_meta_daily || []) || null,
+      },
+    },
     hubspot,
   };
 }
