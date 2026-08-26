@@ -443,6 +443,12 @@ async function build() {
   const queriesThrough = maxDay(t.queries);
 
   const hubspot = await fetchHubSpot(addDays(dataThrough, -89), dataThrough);
+  /* One line of ops logging so the integration's health is visible in Vercel's
+   * runtime logs without needing a signed-in session to inspect the payload.
+   * Deliberately records only the outcome — never the token, never any row. */
+  console.log('hubspot:', hubspot.connected
+    ? 'connected, ' + hubspot.rows.length + ' rows'
+    : 'not connected — ' + hubspot.reason);
 
   return {
     meta: {
