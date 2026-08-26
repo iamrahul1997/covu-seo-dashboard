@@ -351,8 +351,12 @@ async function fetchHubSpot(startDate, endDate) {
         const parsed = JSON.parse(body);
         detail = parsed.message || parsed.error || body.slice(0, 200);
       } catch { detail = ''; }
+      // 403 here is always a scope problem. HubSpot names the scopes it wants
+      // in the message body, so pass that through rather than paraphrasing —
+      // an earlier guess of "business-intelligence" was simply wrong.
       const hint = res.status === 403
-        ? ' — the private app is probably missing the business-intelligence (analytics read) scope'
+        ? ' — the private app needs the traffic-analytics-api-access or'
+          + ' cms-analytics-api-access scope'
         : res.status === 401 ? ' — token rejected; it may have been rotated' : '';
       return {
         connected: false,

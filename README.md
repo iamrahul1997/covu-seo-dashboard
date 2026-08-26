@@ -119,11 +119,26 @@ and a forged callback with no matching state cookie.
 
 ## HubSpot (optional)
 
-The AEO tab has a conversions panel that stays dark until a token is present.
-To enable it, create a HubSpot private app with the content-analytics read scope
-and add its token as `HUBSPOT_TOKEN` in the Vercel project's environment
-variables. No code change needed. Without it the dashboard renders normally and
-the panel explains it is not connected.
+The **Pages** tab carries an "Engagement & conversions" card that joins HubSpot
+views, form submissions, contacts and bounce onto the same rows as Search Console
+clicks. It stays dark until `HUBSPOT_TOKEN` is set in the Vercel project's
+environment variables. No code change needed to enable it.
+
+The private app must carry **`traffic-analytics-api-access`** or
+**`cms-analytics-api-access`**. Anything less returns 403. Confirmed against the
+live API, which replies:
+
+```
+requires any of [cms-analytics-api-access, traffic-analytics-api-access]
+```
+
+`business-intelligence` is **not** sufficient, despite being the obvious guess.
+
+Whatever the failure, the dashboard still renders and the card states the reason
+and the specific remedy — missing token, wrong scope, rotated token, or an
+unexpected response shape. The outcome is also logged once per payload build, so
+`get_runtime_logs` shows the integration's health without needing a signed-in
+session to inspect `/api/data`.
 
 Note that HubSpot supplies *engagement and conversion* data (views, form
 submissions, contacts). It does **not** provide an AI-referral breakdown — that

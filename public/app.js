@@ -503,11 +503,27 @@ function renderHubSpotCard(pages) {
   var head = '<div class="card g"><h2>Engagement &amp; conversions (HubSpot)</h2>';
 
   if (!hs.connected || !hs.rows || !hs.rows.length) {
+    /* The remedy depends on the failure. Telling someone to add a token they
+     * already added, because the real problem is its scopes, wastes their time. */
+    var reason = String(hs.reason || 'no token');
+    var fix;
+    if (reason.indexOf('not set') >= 0) {
+      fix = 'Add <b>HUBSPOT_TOKEN</b> to the Vercel project\'s environment variables — a '
+        + 'HubSpot private-app token — then redeploy.';
+    } else if (reason.indexOf('403') >= 0) {
+      fix = 'The token is reaching HubSpot but lacks permission. In HubSpot go to '
+        + '<b>Settings → Integrations → Private Apps</b>, open the app, and under <b>Scopes</b> '
+        + 'enable <b>traffic-analytics-api-access</b> (or <b>cms-analytics-api-access</b>). Save, '
+        + 'then check whether HubSpot issued a new token — if so, update it in Vercel.';
+    } else if (reason.indexOf('401') >= 0) {
+      fix = 'HubSpot rejected the token outright. It was most likely rotated — copy the current '
+        + 'value from the private app and update <b>HUBSPOT_TOKEN</b> in Vercel.';
+    } else {
+      fix = 'The call reached HubSpot but the response did not contain the expected fields. '
+        + 'The reason above lists what came back.';
+    }
     return head + '<div class="sub">Views, form submissions and contacts per page</div>'
-      + '<div class="note">Not connected — ' + esc(hs.reason || 'no token') + '.<br><br>'
-      + 'To switch it on, add <b>HUBSPOT_TOKEN</b> to the Vercel project\'s environment '
-      + 'variables (a HubSpot private-app token with the business-intelligence scope) and '
-      + 'redeploy. Nothing else needs to change.</div></div>';
+      + '<div class="note">Not connected — ' + esc(reason) + '<br><br>' + fix + '</div></div>';
   }
 
   var byPath = {};
