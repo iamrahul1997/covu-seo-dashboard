@@ -3,11 +3,26 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "COVU SEO & AEO dashboard — reads the GSC Data sheet and renders Search Console, GA4 and blog performance.",
+  "description": "COVU SEO & AEO dashboard, and the Postgres-backed search platform that is replacing its data layer.",
   "scripts": {
-    "check": "node scripts/check.js"
+    "check": "node scripts/check.js",
+    "auth-check": "node scripts/auth-check.js",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js",
+    "backfill": "node scripts/backfill.js",
+    "reconcile": "node scripts/reconcile.js",
+    "refresh": "node scripts/refresh.js",
+    "health": "node scripts/health.js",
+    "psql": "node scripts/query.js",
+    "test": "node --test 'test/*.test.js'"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.1.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.7"
   }
 }

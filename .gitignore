@@ -4,3 +4,7 @@ node_modules/
 *.log
 public/*.original
 scripts/api-data.baseline.json
+.data/
+ops/refresh.log
+.env
+.env.local
