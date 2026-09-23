@@ -408,6 +408,20 @@ function rollUpAds(rows, weekIndex, keyField) {
   };
 }
 
+/* One creative thumbnail per ad. The sheet repeats it on every daily row, so
+ * this collapses to a single URL keyed by the same ad name rollUpAds uses.
+ * Latest row wins — the URLs are signed and refreshed each run, so the most
+ * recent is the one most likely to still resolve. */
+function thumbnailsByAd(rows) {
+  const out = {};
+  for (const r of rows) {
+    const name = String(r.ad || '').trim();
+    const thumb = String(r.thumbnail || '').trim();
+    if (name && thumb) out[name] = thumb;
+  }
+  return out;
+}
+
 /* Keywords have no useful week-by-week shape at this spend level, so they ship
  * as one snapshot over whatever window the pipeline last wrote. */
 function keywordSnapshot(rows, limit) {
@@ -516,6 +530,7 @@ async function build() {
         campaigns: rollUpAds(t.ads_meta_daily || [], wIdx, 'campaign'),
         adsets: rollUpAds(t.ads_meta_daily || [], wIdx, 'adset'),
         creatives: rollUpAds(t.ads_meta_ad || [], wIdx, 'ad'),
+        thumbs: thumbnailsByAd(t.ads_meta_ad || []),
         lastRun: metaKV.ads_meta_last_run || null,
         through: maxDay(t.ads_meta_daily || []) || null,
       },

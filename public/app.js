@@ -1031,7 +1031,20 @@ function renderMetaAds(w) {
       + '<th>Link CTR</th><th>Leads</th><th>Cost / lead</th></tr></thead><tbody>'
       + score.rows.map(function (r) {
         var leads = r.conv / 100;
-        return '<tr><td class="q" title="' + esc(r.k) + '">' + esc(r.k) + '</td>'
+        var thumb = (D.ads.meta.thumbs || {})[r.k];
+        /* onerror hides a broken image rather than showing the browser's
+         * placeholder — Meta's thumbnail URLs are signed and can expire between
+         * daily refreshes, and a missing picture should not make a real row
+         * look broken. */
+        /* An explicit flex wrapper rather than td:has(.thumb) — the :has rule
+         * silently did not apply and the cell stayed table-cell, so the image
+         * and the name did not line up. */
+        return '<tr><td class="q" title="' + esc(r.k) + '"><div class="adcell">'
+          + (thumb
+            ? '<img class="thumb" src="' + esc(thumb) + '" alt="" loading="lazy" '
+              + 'onerror="this.style.display=\'none\'">'
+            : '')
+          + '<span>' + esc(r.k) + '</span></div></td>'
           + '<td style="text-align:left">' + verdictChip(r.verdict) + '</td>'
           + '<td>' + money(r.cents) + '</td>'
           /* Two decimals here, unlike elsewhere. Link CTRs cluster within a few

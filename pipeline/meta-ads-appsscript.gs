@@ -58,7 +58,7 @@ var META_DAILY_TAB = 'ads_meta_daily';
 var META_AD_TAB = 'ads_meta_ad';
 
 var META_DAILY_HEADER = ['date', 'campaign', 'adset', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings'];
-var META_AD_HEADER = ['date', 'ad', 'adset', 'campaign', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings'];
+var META_AD_HEADER = ['date', 'ad', 'ad_id', 'adset', 'campaign', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings', 'thumbnail'];
 
 function metaMain() { metaRun(META_LOOKBACK_DAYS); }
 /* Everything from META_START_DATE to today; the clamp in metaDateRange does the
@@ -72,6 +72,7 @@ function metaRun(days) {
   var range = metaDateRange(days);
   Logger.log('Pulling ' + range.since + ' → ' + range.until);
   var meetingTypes = metaMeetingActionTypes(token);
+  var thumbs = metaCreativeThumbnails(token);
 
   var daily = metaFetchInsights(token, range, 'adset', function (r) {
     return [
@@ -92,6 +93,7 @@ function metaRun(days) {
     return [
       r.date_start,
       r.ad_name || '',
+      String(r.ad_id || ''),
       r.adset_name || '',
       r.campaign_name || '',
       metaInt(r.impressions),
@@ -100,6 +102,7 @@ function metaRun(days) {
       metaMoney(r.spend),
       metaLeads(r),
       metaMeetings(r, meetingTypes),
+      thumbs[String(r.ad_id || '')] || '',
     ];
   });
   metaWriteMerged(META_AD_TAB, META_AD_HEADER, ads, 2, range);
@@ -113,7 +116,7 @@ function metaFetchInsights(token, range, level, mapRow) {
   var fields = [
     'date_start', 'campaign_name', 'adset_name', 'impressions', 'clicks', 'spend', 'actions',
   ];
-  if (level === 'ad') fields.push('ad_name');
+  if (level === 'ad') { fields.push('ad_name'); fields.push('ad_id'); }
 
   var url = 'https://graph.facebook.com/' + META_API_VERSION + '/' + META_AD_ACCOUNT + '/insights'
     + '?level=' + level
@@ -146,6 +149,49 @@ function metaFetchInsights(token, range, level, mapRow) {
   }
   Logger.log('level=' + level + ': ' + rows.length + ' rows over ' + pages + ' page(s)');
   return rows;
+}
+
+/* Creative thumbnails, fetched once per run and joined to insights on ad_id.
+ *
+ * Insights never returns creative, so this is a second call. The URLs Meta
+ * hands back are signed and time-limited, which is exactly why they are
+ * re-fetched on every daily run rather than stored once — each run replaces
+ * yesterday's URL with a fresh one. If thumbnails ever start showing blank in
+ * the dashboard, that is the signature expiring faster than the refresh
+ * interval, and the fix is to cache the image bytes rather than the URL.
+ *
+ * thumbnail_url is a small preview; image_url is the full asset. Preferring the
+ * thumbnail keeps the sheet small and the dashboard fast — these render at
+ * about 40px.
+ */
+function metaCreativeThumbnails(token) {
+  var map = {};
+  try {
+    var url = 'https://graph.facebook.com/' + META_API_VERSION + '/' + META_AD_ACCOUNT
+      + '/ads?fields=id,name,creative{thumbnail_url,image_url}'
+      + '&limit=200&access_token=' + encodeURIComponent(token);
+    var pages = 0;
+    while (url && pages < 20) {
+      var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) {
+        Logger.log('creative thumbnails unavailable (HTTP ' + res.getResponseCode()
+          + ') — the ad table will render without images');
+        return map;
+      }
+      var json = JSON.parse(res.getContentText());
+      (json.data || []).forEach(function (ad) {
+        var c = ad.creative || {};
+        var thumb = c.thumbnail_url || c.image_url || '';
+        if (thumb) map[String(ad.id)] = thumb;
+      });
+      url = json.paging && json.paging.next ? json.paging.next : null;
+      pages++;
+    }
+    Logger.log('creative thumbnails: ' + Object.keys(map).length + ' ads');
+  } catch (e) {
+    Logger.log('creative thumbnail lookup failed: ' + e.message);
+  }
+  return map;
 }
 
 /* Resolve the custom conversion's action_type once per run.
@@ -194,15 +240,22 @@ function metaMeetings(r, actionTypes) {
   return total;
 }
 
-/* Meta reports conversions in a nested actions array rather than as columns. */
+/* Leads — count the `lead` action type ONLY.
+ *
+ * Meta's actions array carries an aggregate alongside the specific types for
+ * the same conversion: `lead` plus `onsite_conversion.lead_grouped` for Instant
+ * Forms, or `offsite_conversion.fb_pixel_lead` for pixel leads. Summing them
+ * double counts. Caught 2026-09-23 against a hand-reconciled week where every
+ * campaign came out at exactly 2x: Prospecting 8 vs 4, GUIDE 6 vs 3,
+ * Retargeting 2 vs 1.
+ *
+ * `lead` already includes both on-site and off-site leads, so it is the whole
+ * figure and nothing should be added to it.
+ */
 function metaLeads(r) {
   var total = 0;
   (r.actions || []).forEach(function (a) {
-    var t = String(a.action_type || '');
-    if (t === 'lead' || t.indexOf('onsite_conversion.lead') === 0
-      || t === 'offsite_conversion.fb_pixel_lead') {
-      total += Number(a.value || 0);
-    }
+    if (String(a.action_type || '') === 'lead') total += Number(a.value || 0);
   });
   return total;
 }
