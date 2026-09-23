@@ -58,7 +58,7 @@ var META_DAILY_TAB = 'ads_meta_daily';
 var META_AD_TAB = 'ads_meta_ad';
 
 var META_DAILY_HEADER = ['date', 'campaign', 'objective', 'adset', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings'];
-var META_AD_HEADER = ['date', 'ad', 'ad_id', 'adset', 'campaign', 'objective', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings', 'thumbnail'];
+var META_AD_HEADER = ['date', 'ad', 'ad_id', 'adset', 'campaign', 'objective', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings', 'thumbnail', 'image'];
 
 function metaMain() { metaRun(META_LOOKBACK_DAYS); }
 /* Everything from META_START_DATE to today; the clamp in metaDateRange does the
@@ -105,7 +105,8 @@ function metaRun(days) {
       metaMoney(r.spend),
       metaLeads(r),
       metaMeetings(r, meetingTypes),
-      thumbs[String(r.ad_id || '')] || '',
+      (thumbs[String(r.ad_id || '')] || {}).thumb || '',
+      (thumbs[String(r.ad_id || '')] || {}).full || '',
     ];
   });
   metaWriteMerged(META_AD_TAB, META_AD_HEADER, ads, 2, range);
@@ -215,19 +216,25 @@ function metaCreativeThumbnails(token) {
     return {};
   }
 
-  var creativeToThumb = metaFetchPaged(token, '/adcreatives', 'id,thumbnail_url,image_url',
+  /* Both sizes: thumbnail_url is a small preview for the table row, image_url
+   * the full creative behind a click. Same call, so the second size is free. */
+  var creativeToArt = metaFetchPaged(token, '/adcreatives', 'id,thumbnail_url,image_url',
     function (acc, c) {
-      var t = c.thumbnail_url || c.image_url || '';
-      if (t) acc[String(c.id)] = t;
+      if (c.thumbnail_url || c.image_url) {
+        acc[String(c.id)] = {
+          thumb: c.thumbnail_url || c.image_url || '',
+          full: c.image_url || c.thumbnail_url || '',
+        };
+      }
       return acc;
     }, {});
 
   var out = {};
   Object.keys(adToCreative).forEach(function (adId) {
-    var thumb = creativeToThumb[adToCreative[adId]];
-    if (thumb) out[adId] = thumb;
+    var art = creativeToArt[adToCreative[adId]];
+    if (art) out[adId] = art;
   });
-  Logger.log('creative thumbnails: ' + Object.keys(out).length + ' of ' + creativeCount + ' ads');
+  Logger.log('creative art: ' + Object.keys(out).length + ' of ' + creativeCount + ' ads');
   return out;
 }
 
