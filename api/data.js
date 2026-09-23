@@ -408,6 +408,32 @@ function rollUpAds(rows, weekIndex, keyField) {
   };
 }
 
+/* What each campaign was bought to do, so creatives can be judged on the metric
+ * their campaign optimised for instead of all being measured on cost per lead. */
+function objectivesByCampaign(rows) {
+  const out = {};
+  for (const r of rows) {
+    const name = String(r.campaign || '').trim();
+    const obj = String(r.objective || '').trim();
+    if (name && obj) out[name] = obj;
+  }
+  return out;
+}
+
+/* One creative thumbnail per ad. The sheet repeats it on every daily row, so
+ * this collapses to a single URL keyed by the same ad name rollUpAds uses.
+ * Latest row wins — the URLs are signed and refreshed each run, so the most
+ * recent is the one most likely to still resolve. */
+function thumbnailsByAd(rows) {
+  const out = {};
+  for (const r of rows) {
+    const name = String(r.ad || '').trim();
+    const thumb = String(r.thumbnail || '').trim();
+    if (name && thumb) out[name] = thumb;
+  }
+  return out;
+}
+
 /* Keywords have no useful week-by-week shape at this spend level, so they ship
  * as one snapshot over whatever window the pipeline last wrote. */
 function keywordSnapshot(rows, limit) {
@@ -516,6 +542,28 @@ async function build() {
         campaigns: rollUpAds(t.ads_meta_daily || [], wIdx, 'campaign'),
         adsets: rollUpAds(t.ads_meta_daily || [], wIdx, 'adset'),
         creatives: rollUpAds(t.ads_meta_ad || [], wIdx, 'ad'),
+        thumbs: thumbnailsByAd(t.ads_meta_ad || []),
+        objectives: objectivesByCampaign(t.ads_meta_daily || []),
+        /* ad -> campaign, so the tab can group creatives without a second
+         * rollUp keyed on a pair. */
+        adCampaign: (t.ads_meta_ad || []).reduce((m, r) => {
+          const ad = String(r.ad || '').trim();
+          const camp = String(r.campaign || '').trim();
+          if (ad && camp) m[ad] = camp;
+          return m;
+        }, {}),
+        adAdset: (t.ads_meta_ad || []).reduce((m, r) => {
+          const ad = String(r.ad || '').trim();
+          const set = String(r.adset || '').trim();
+          if (ad && set) m[ad] = set;
+          return m;
+        }, {}),
+        adsetCampaign: (t.ads_meta_daily || []).reduce((m, r) => {
+          const set = String(r.adset || '').trim();
+          const camp = String(r.campaign || '').trim();
+          if (set && camp) m[set] = camp;
+          return m;
+        }, {}),
         lastRun: metaKV.ads_meta_last_run || null,
         through: maxDay(t.ads_meta_daily || []) || null,
       },

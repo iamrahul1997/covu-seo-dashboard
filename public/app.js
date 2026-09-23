@@ -932,44 +932,84 @@ function median(values) {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-/* Creative scorecard — the weekly report's scale-or-kill call, made from data.
+/* What a campaign was bought to do decides how its creatives are judged.
  *
- * Two axes, matching how the report already reads creatives: the HOOK is link
- * CTR (did the ad earn the click) and the CLOSE is cost per lead (did the click
- * turn into anything). Each ad is judged against this account's own medians,
- * not an industry benchmark, because what counts as good here is whatever the
- * rest of the account is doing.
+ * Grading everything on cost per lead punished campaigns that never optimised
+ * for leads: TOF LINK CLICK IMPRESSION takes 242k impressions and 1,291 clicks
+ * for zero leads, by design, and read KILL against a benchmark it was not
+ * competing in. Meta's own objective decides the close metric instead. */
+function campaignGoal(objective, totals) {
+  var o = String(objective || '').toUpperCase();
+  if (/LEAD|SALES|CONVERSION/.test(o)) return 'leads';
+  if (/TRAFFIC|LINK_CLICK/.test(o)) return 'clicks';
+  if (/AWARENESS|REACH|IMPRESSION/.test(o)) return 'reach';
+  if (/ENGAGEMENT/.test(o)) return 'clicks';
+
+  /* No objective recorded yet — infer from the campaign's own conversion rate.
+   *
+   * "Did any creative produce a lead" is too weak a test: TOF LINK CLICK
+   * IMPRESSION has zero leads across 1,291 link clicks, yet two of its
+   * creatives carry fractional lead values that round to nothing, which was
+   * enough to get the whole campaign judged on cost per lead. The account
+   * separates cleanly on rate instead — real lead campaigns run 4.7% to 45% of
+   * link clicks, TOF runs 0%. */
+  var leads = (totals.conv || 0) / 100;
+  var rate = totals.lc ? leads / totals.lc : 0;
+  return (leads >= 1 && rate >= 0.01) ? 'leads' : 'clicks';
+}
+
+var GOAL_LABEL = {
+  leads: { close: 'Cost / lead', unit: 'cost per lead' },
+  clicks: { close: 'Cost / link click', unit: 'cost per link click' },
+  reach: { close: 'CPM', unit: 'cost per 1,000 impressions' },
+};
+
+/* The close metric, in cents, for one creative under its campaign's goal.
+ * null means the creative produced nothing to divide by. */
+function closeCost(r, goal) {
+  if (goal === 'leads') return r.conv > 0 ? r.cents / (r.conv / 100) : null;
+  if (goal === 'clicks') return r.lc > 0 ? r.cents / r.lc : null;
+  return r.i > 0 ? r.cents / (r.i / 1000) : null;   // reach -> CPM
+}
+
+/* Creative scorecard, scored INSIDE one campaign.
  *
- * Verdicts are withheld when there are fewer than four ads with real spend — a
- * median over two creatives is not a benchmark, it is a coin toss. */
-function creativeScorecard(rows) {
-  var SPEND_FLOOR = 0.3;   // share of median spend below which an ad is "thin"
-  var spends = rows.map(function (r) { return r.cents; });
-  var medSpend = median(spends);
+ * Hook is always link CTR — did the ad earn the click. Close depends on the
+ * campaign's objective. Medians are per campaign too: one median across five
+ * campaigns with different economics made every verdict meaningless.
+ *
+ * Verdicts are withheld below four funded creatives — a median over two or
+ * three is a coin toss, not a benchmark. */
+function creativeScorecard(rows, goal) {
+  var SPEND_FLOOR = 0.3;
+  var medSpend = median(rows.map(function (r) { return r.cents; }));
   var qualifying = rows.filter(function (r) { return r.cents >= medSpend * SPEND_FLOOR; });
 
   if (qualifying.length < 4) {
-    return { rows: rows, graded: false, reason: qualifying.length + ' creative'
-      + (qualifying.length === 1 ? '' : 's') + ' with meaningful spend — too few to rank against each other' };
+    return { rows: rows, graded: false, goal: goal, n: qualifying.length };
   }
 
   var medHook = median(qualifying.map(function (r) { return r.i ? r.lc / r.i * 100 : 0; }));
-  var withLeads = qualifying.filter(function (r) { return r.conv > 0; });
-  var medCpl = median(withLeads.map(function (r) { return r.cents / (r.conv / 100); }));
+  var closes = [];
+  qualifying.forEach(function (r) {
+    var c = closeCost(r, goal);
+    if (c !== null) closes.push(c);
+  });
+  var medClose = median(closes);
 
   rows.forEach(function (r) {
     if (r.cents < medSpend * SPEND_FLOOR) { r.verdict = 'THIN'; return; }
     var hook = r.i ? r.lc / r.i * 100 : 0;
-    var cpl = r.conv > 0 ? r.cents / (r.conv / 100) : null;
+    var close = closeCost(r, goal);
     var hookOk = hook >= medHook;
-    var closeOk = cpl !== null && medCpl > 0 && cpl <= medCpl;
+    var closeOk = close !== null && medClose > 0 && close <= medClose;
     if (hookOk && closeOk) r.verdict = 'SCALE';
     else if (!hookOk && closeOk) r.verdict = 'GRADUATE';
     else if (hookOk && !closeOk) r.verdict = 'WATCH';
     else r.verdict = 'KILL';
   });
 
-  return { rows: rows, graded: true, medHook: medHook, medCpl: medCpl, n: qualifying.length };
+  return { rows: rows, graded: true, goal: goal, medHook: medHook, medClose: medClose, n: qualifying.length };
 }
 
 function verdictChip(v) {
@@ -978,14 +1018,31 @@ function verdictChip(v) {
   return '<span class="chip ' + cls + '" style="font-size:10px;padding:2px 7px">' + v + '</span>';
 }
 
+/* One creative row. Thumbnail only — no link out; the picture is the point. */
+function creativeRow(r, goal) {
+  var thumb = ((D.ads.meta && D.ads.meta.thumbs) || {})[r.k];
+  var close = closeCost(r, goal);
+  return '<tr><td class="q" title="' + esc(r.k) + '"><div class="adcell">'
+    + (thumb
+      ? '<img class="thumb" src="' + esc(thumb) + '" alt="" loading="lazy" '
+        + 'onerror="this.style.display=\'none\'">'
+      : '<span class="thumb"></span>')
+    + '<span>' + esc(r.k) + '</span></div></td>'
+    + '<td style="text-align:left">' + (r.verdict ? verdictChip(r.verdict) : '') + '</td>'
+    + '<td>' + money(r.cents) + '</td>'
+    + '<td>' + (r.i ? (r.lc / r.i * 100).toFixed(2) : '0.00') + '%</td>'
+    + '<td>' + F(r.lc) + '</td>'
+    + '<td>' + F1(r.conv / 100) + '</td>'
+    + '<td class="p">' + (close === null ? '—' : money(close)) + '</td></tr>';
+}
+
 function renderMetaAds(w) {
   var m = (D.ads && D.ads.meta) || null;
   if (!m || !m.campaigns || !m.campaigns.keys.length) {
     E('p-mads').innerHTML = '<div class="card g"><h2>Meta Ads</h2>'
       + '<div class="note">No Meta data in the sheet yet. The Apps Script in '
       + '<b>pipeline/meta-ads-appsscript.gs</b> writes <b>ads_meta_daily</b> and '
-      + '<b>ads_meta_ad</b>; once it has run, this tab fills in with no code change — '
-      + 'the tabs are resolved by name.</div></div>';
+      + '<b>ads_meta_ad</b>; once it has run, this tab fills in.</div></div>';
     return;
   }
 
@@ -994,11 +1051,13 @@ function renderMetaAds(w) {
     labels.push('Week of ' + fmtDate(D.weeks[i]));
     flags.push(D.weekDays[i] < 7);
   }
-  var spend = adsSeries(m.campaigns, w.a, w.b);
+
   var campaigns = adsByKey(m.campaigns, w.a, w.b);
   var adsets = adsByKey(m.adsets, w.a, w.b);
   var creatives = adsByKey(m.creatives, w.a, w.b);
-  var score = creativeScorecard(creatives);
+  var objectives = m.objectives || {};
+  var adCampaign = m.adCampaign || {};
+  var adsetCampaign = m.adsetCampaign || {};
 
   var stale = '';
   if (m.lastRun) {
@@ -1010,58 +1069,66 @@ function renderMetaAds(w) {
     }
   }
 
-  var beyond = m.through && m.through > D.meta.dataThrough
-    ? '<div class="note">Meta data runs to <b>' + fmtDate(m.through) + '</b>, but the weeks here '
-      + 'align to the organic window ending <b>' + fmtDate(D.meta.dataThrough) + '</b> so paid and '
-      + 'organic stay comparable.</div>'
-    : '';
-
-  var scoreCard = '<div class="card g"><h2>Creative scorecard</h2>'
-    + '<div class="sub">Hook = link CTR · Close = cost per lead · judged against this account\'s '
-    + 'own medians</div>';
-  if (!creatives.length) {
-    scoreCard += '<div class="note">No ad-level spend in this range</div>';
-  } else if (!score.graded) {
-    scoreCard += metaTable(creatives, 'Ad')
-      + '<div class="note">No verdicts shown: ' + esc(score.reason) + '. A median across two or '
-      + 'three creatives is not a benchmark, so ranking them against each other would invent a '
-      + 'signal that is not there.</div>';
-  } else {
-    scoreCard += '<div class="tw"><table><thead><tr><th>Ad</th><th>Call</th><th>Spend</th>'
-      + '<th>Link CTR</th><th>Leads</th><th>Cost / lead</th></tr></thead><tbody>'
-      + score.rows.map(function (r) {
-        var leads = r.conv / 100;
-        return '<tr><td class="q" title="' + esc(r.k) + '">' + esc(r.k) + '</td>'
-          + '<td style="text-align:left">' + verdictChip(r.verdict) + '</td>'
-          + '<td>' + money(r.cents) + '</td>'
-          /* Two decimals here, unlike elsewhere. Link CTRs cluster within a few
-           * tenths of a point, so one decimal prints an ad at "1.5%" beside a
-           * median of "1.5%" and then calls it KILL — which reads as arbitrary
-           * rather than as the near-miss it is. */
-          + '<td>' + (r.i ? (r.lc / r.i * 100).toFixed(2) : '0.00') + '%</td>'
-          + '<td>' + F1(leads) + '</td>'
-          + '<td class="p">' + (leads ? money(r.cents / leads) : '—') + '</td></tr>';
-      }).join('') + '</tbody></table></div>'
-      + '<div class="note">Across ' + score.n + ' creatives with real spend, the median hook is <b>'
-      + score.medHook.toFixed(2) + '%</b> and the median cost per lead <b>' + money(score.medCpl) + '</b>. '
-      + '<b>SCALE</b> beats both. <b>GRADUATE</b> converts cheaply despite a weak hook — worth new '
-      + 'creative on a working offer. <b>WATCH</b> earns the click but not the lead. <b>KILL</b> '
-      + 'loses on both. <b>THIN</b> has too little spend to judge. These are relative calls, not '
-      + 'absolute ones: if the whole account is underperforming, something still reads SCALE.</div>';
-  }
-  scoreCard += '</div>';
-
-  E('p-mads').innerHTML = stale
+  /* Account-level spend first, then one self-contained block per campaign.
+   * Three flat tables threw away the hierarchy that actually matters when
+   * managing this account. */
+  var html = stale
     + '<div class="card g"><h2>Weekly spend</h2>'
-    + '<div class="sub">' + campaigns.length + ' campaign' + (campaigns.length === 1 ? '' : 's')
-    + ' · ' + spend.length + ' weeks'
+    + '<div class="sub">' + campaigns.length + ' campaign'
+    + (campaigns.length === 1 ? '' : 's') + ' · ' + (w.b - w.a + 1) + ' weeks'
     + (flags.some(Boolean) ? ' · hollow dot = partial week' : '') + '</div>'
-    + chart(spend, labels, flags, '#0b5ed9') + beyond + '</div>'
-    + '<div class="card g"><h2>Campaigns</h2><div class="sub">Ranked by spend in range</div>'
-    + metaTable(campaigns, 'Campaign') + '</div>'
-    + '<div class="card g"><h2>Ad sets</h2><div class="sub">The angle each audience is being sold</div>'
-    + metaTable(adsets, 'Ad set') + '</div>'
-    + scoreCard;
+    + chart(adsSeries(m.campaigns, w.a, w.b), labels, flags, '#0b5ed9') + '</div>';
+
+  campaigns.forEach(function (camp) {
+    var mine = creatives.filter(function (r) { return adCampaign[r.k] === camp.k; });
+    var mySets = adsets.filter(function (r) { return adsetCampaign[r.k] === camp.k; });
+    var goal = campaignGoal(objectives[camp.k], camp);
+    var lbl = GOAL_LABEL[goal];
+    var score = creativeScorecard(mine, goal);
+    var leads = camp.conv / 100;
+    var close = closeCost(camp, goal);
+
+    html += '<div class="card g"><h2>' + esc(camp.k) + '</h2>'
+      + '<div class="sub">'
+      + (objectives[camp.k]
+        ? 'Objective <b>' + esc(objectives[camp.k].replace(/^OUTCOME_/, '').toLowerCase()) + '</b>'
+        : 'No objective recorded — judged on what it produced')
+      + ' · judged on ' + lbl.unit + '</div>'
+
+      /* Campaign headline, in the terms of its own objective. */
+      + '<div class="brow" style="grid-template-columns:repeat(4,1fr);gap:16px">'
+      + '<span>Spend <b>' + money(camp.cents) + '</b></span>'
+      + '<span>Link clicks <b>' + F(camp.lc) + '</b></span>'
+      + '<span>Leads <b>' + F1(leads) + '</b></span>'
+      + '<span>' + lbl.close + ' <b>' + (close === null ? '—' : money(close)) + '</b></span>'
+      + '</div>'
+
+      + (mySets.length > 1
+        ? '<div class="sub" style="margin-top:14px;padding-left:0"><b>Ad sets</b></div>'
+          + metaTable(mySets, 'Ad set')
+        : '')
+
+      + '<div class="sub" style="margin-top:16px;padding-left:0"><b>Creatives</b> · hook = link CTR'
+      + ' · close = ' + lbl.unit + '</div>'
+      + (mine.length
+        ? '<div class="tw"><table><thead><tr><th>Ad</th><th>Call</th><th>Spend</th>'
+          + '<th>Link CTR</th><th>Link clicks</th><th>Leads</th><th>' + lbl.close + '</th>'
+          + '</tr></thead><tbody>'
+          + score.rows.map(function (r) { return creativeRow(r, goal); }).join('')
+          + '</tbody></table></div>'
+          + (score.graded
+            ? '<div class="note">Median hook <b>' + score.medHook.toFixed(2) + '%</b>, median '
+              + lbl.unit + ' <b>' + money(score.medClose) + '</b>, across ' + score.n
+              + ' funded creatives <b>in this campaign</b>. Verdicts are relative to this campaign '
+              + 'only — a SCALE here is not comparable to a SCALE elsewhere.</div>'
+            : '<div class="note">No verdicts: only ' + score.n + ' creative'
+              + (score.n === 1 ? '' : 's') + ' with meaningful spend. A median over two or three '
+              + 'is a coin toss rather than a benchmark.</div>')
+        : '<div class="note">No ad-level spend in this range</div>')
+      + '</div>';
+  });
+
+  E('p-mads').innerHTML = html;
 }
 
 /* ---------- KPI row ---------- */
