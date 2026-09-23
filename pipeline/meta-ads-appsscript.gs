@@ -17,75 +17,105 @@
  *      Generate. Copy it. It does not expire; treat it like a password.
  *   5. In this Apps Script project: Project Settings → Script properties →
  *      add META_TOKEN with that value. Never paste it into the code.
- *   6. Run backfill() once, then Triggers → add a daily trigger on main().
+ *   6. Run metaBackfill() once, then Triggers → add a daily trigger on metaMain().
  *
- * Idempotent: refreshes the trailing LOOKBACK_DAYS and preserves older history,
- * so a daily run corrects late-attributed leads without duplicating anything.
+ * SCOPE: ad account act_4460021897602415 only, June 2026 onward. Tracks leads
+ * and the meeting_confirmed custom conversion.
+ *
+ * Idempotent: refreshes the trailing 90 days and preserves older history, so a
+ * daily run corrects late-attributed leads without duplicating anything.
+ *
+ * EVERY top-level name here is prefixed `meta`/`META_`. That is not style.
+ * Apps Script shares ONE global namespace across all files in a project, and
+ * this one already contains the nightly Search Console + GA4 pipeline in
+ * Code.gs. An unprefixed `main`, `writeMerged` or `SPREADSHEET_ID` would
+ * silently override that pipeline's own — no error, just the wrong function
+ * running on its 01:13 trigger. Keep the prefixes when editing.
  */
 
-var SPREADSHEET_ID = '1IuI7NqgsrourIz1BeH44zx_Wp5_xSaGffkxYS1eYXXc';
-var AD_ACCOUNT = 'act_4460021897602415';   // COVU Ads
-var API_VERSION = 'v21.0';
-var LOOKBACK_DAYS = 90;
-var BACKFILL_DAYS = 365;
+var META_SPREADSHEET_ID = '1IuI7NqgsrourIz1BeH44zx_Wp5_xSaGffkxYS1eYXXc';
+var META_AD_ACCOUNT = 'act_4460021897602415';   // COVU Ads
+/* Graph API version. Meta retires a version roughly two years after release,
+ * and this one was pinned in August 2026 — if a metaRun fails with a deprecation
+ * or "unsupported version" error, raise this to the current version shown at
+ * developers.facebook.com/docs/graph-api/changelog. Nothing else needs to
+ * change; the fields used here are stable across versions. */
+var META_API_VERSION = 'v21.0';
+/* Custom conversion to track alongside leads. Meta does NOT expose custom
+ * events by name in the insights `actions` array — they arrive as
+ * `offsite_conversion.custom.<id>` — so the id is resolved by name at run time
+ * from /customconversions. Rename here if the conversion is renamed in Events
+ * Manager. */
+var META_MEETING_EVENT = 'meeting_confirmed';
+var META_LOOKBACK_DAYS = 90;
 
-var DAILY_TAB = 'ads_meta_daily';
-var AD_TAB = 'ads_meta_ad';
+/* Hard floor on history. Nothing before this date is ever requested, by either
+ * the daily run or a backfill — Rahul only wants June 2026 onward, and an
+ * absolute date cannot drift the way a day count does. */
+var META_START_DATE = '2026-06-01';
 
-var DAILY_HEADER = ['date', 'campaign', 'adset', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads'];
-var AD_HEADER = ['date', 'ad', 'adset', 'campaign', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads'];
+var META_DAILY_TAB = 'ads_meta_daily';
+var META_AD_TAB = 'ads_meta_ad';
 
-function main() { run(LOOKBACK_DAYS); }
-function backfill() { run(BACKFILL_DAYS); }
+var META_DAILY_HEADER = ['date', 'campaign', 'adset', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings'];
+var META_AD_HEADER = ['date', 'ad', 'adset', 'campaign', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings'];
 
-function run(days) {
+function metaMain() { metaRun(META_LOOKBACK_DAYS); }
+/* Everything from META_START_DATE to today; the clamp in metaDateRange does the
+ * limiting, so the number here only has to be large enough. */
+function metaBackfill() { metaRun(3650); }
+
+function metaRun(days) {
   var token = PropertiesService.getScriptProperties().getProperty('META_TOKEN');
   if (!token) throw new Error('META_TOKEN script property is not set — see setup notes at the top.');
 
-  var range = dateRange(days);
+  var range = metaDateRange(days);
   Logger.log('Pulling ' + range.since + ' → ' + range.until);
+  var meetingTypes = metaMeetingActionTypes(token);
 
-  var daily = fetchInsights(token, range, 'adset', function (r) {
+  var daily = metaFetchInsights(token, range, 'adset', function (r) {
     return [
       r.date_start,
       r.campaign_name || '',
       r.adset_name || '',
-      int(r.impressions),
-      int(r.clicks),
-      linkClicks(r),
-      money(r.spend),
-      leads(r),
+      metaInt(r.impressions),
+      metaInt(r.clicks),
+      metaLinkClicks(r),
+      metaMoney(r.spend),
+      metaLeads(r),
+      metaMeetings(r, meetingTypes),
     ];
   });
-  writeMerged(DAILY_TAB, DAILY_HEADER, daily, 3, range);
+  metaWriteMerged(META_DAILY_TAB, META_DAILY_HEADER, daily, 3, range);
 
-  var ads = fetchInsights(token, range, 'ad', function (r) {
+  var ads = metaFetchInsights(token, range, 'ad', function (r) {
     return [
       r.date_start,
       r.ad_name || '',
       r.adset_name || '',
       r.campaign_name || '',
-      int(r.impressions),
-      int(r.clicks),
-      linkClicks(r),
-      money(r.spend),
-      leads(r),
+      metaInt(r.impressions),
+      metaInt(r.clicks),
+      metaLinkClicks(r),
+      metaMoney(r.spend),
+      metaLeads(r),
+      metaMeetings(r, meetingTypes),
     ];
   });
-  writeMerged(AD_TAB, AD_HEADER, ads, 2, range);
+  metaWriteMerged(META_AD_TAB, META_AD_HEADER, ads, 2, range);
 
-  stampMeta();
+  metaStampRun();
 }
 
 /* ---------- Graph API ---------- */
 
-function fetchInsights(token, range, level, mapRow) {
+function metaFetchInsights(token, range, level, mapRow) {
   var fields = [
     'date_start', 'campaign_name', 'adset_name', 'impressions', 'clicks', 'spend', 'actions',
   ];
   if (level === 'ad') fields.push('ad_name');
 
-  var url = 'https://graph.facebook.com/' + API_VERSION + '/' + AD_ACCOUNT + '/insights'
+  var url = 'https://graph.facebook.com/' + META_API_VERSION + '/' + META_AD_ACCOUNT + '/insights'
     + '?level=' + level
     + '&time_increment=1'
     + '&limit=500'
@@ -118,8 +148,54 @@ function fetchInsights(token, range, level, mapRow) {
   return rows;
 }
 
+/* Resolve the custom conversion's action_type once per run.
+ *
+ * A custom event named "meeting_confirmed" never appears under that name in
+ * insights — it arrives as `offsite_conversion.custom.<id>`. Map name -> id
+ * here so the column keeps working if the conversion is rebuilt with a new id.
+ * Returns an empty list rather than throwing: a missing custom conversion must
+ * not take down the spend and lead figures, which are the ones in daily use. */
+function metaMeetingActionTypes(token) {
+  try {
+    var url = 'https://graph.facebook.com/' + META_API_VERSION + '/' + META_AD_ACCOUNT
+      + '/customconversions?fields=id,name&limit=200&access_token=' + encodeURIComponent(token);
+    var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) {
+      Logger.log('custom conversions unavailable (HTTP ' + res.getResponseCode()
+        + ') — meetings will read 0');
+      return [];
+    }
+    var wanted = String(META_MEETING_EVENT).toLowerCase();
+    var out = [];
+    (JSON.parse(res.getContentText()).data || []).forEach(function (c) {
+      if (String(c.name || '').toLowerCase().indexOf(wanted) >= 0) {
+        out.push('offsite_conversion.custom.' + c.id);
+      }
+    });
+    Logger.log('meeting conversions matched: ' + (out.length ? out.join(', ') : 'none named "'
+      + META_MEETING_EVENT + '"'));
+    return out;
+  } catch (e) {
+    Logger.log('custom conversion lookup failed: ' + e.message + ' — meetings will read 0');
+    return [];
+  }
+}
+
+function metaMeetings(r, actionTypes) {
+  var total = 0;
+  (r.actions || []).forEach(function (a) {
+    var t = String(a.action_type || '');
+    if (actionTypes.indexOf(t) >= 0) total += Number(a.value || 0);
+    // Also count it if Meta ever surfaces the event under a readable name.
+    else if (t.toLowerCase().indexOf(String(META_MEETING_EVENT).toLowerCase()) >= 0) {
+      total += Number(a.value || 0);
+    }
+  });
+  return total;
+}
+
 /* Meta reports conversions in a nested actions array rather than as columns. */
-function leads(r) {
+function metaLeads(r) {
   var total = 0;
   (r.actions || []).forEach(function (a) {
     var t = String(a.action_type || '');
@@ -131,7 +207,7 @@ function leads(r) {
   return total;
 }
 
-function linkClicks(r) {
+function metaLinkClicks(r) {
   var total = 0;
   (r.actions || []).forEach(function (a) {
     if (String(a.action_type) === 'link_click') total += Number(a.value || 0);
@@ -141,8 +217,8 @@ function linkClicks(r) {
 
 /* ---------- sheet writing ---------- */
 
-function writeMerged(tabName, header, freshRows, keyCols, range) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+function metaWriteMerged(tabName, header, freshRows, keyCols, range) {
+  var ss = SpreadsheetApp.openById(META_SPREADSHEET_ID);
   var sheet = ss.getSheetByName(tabName) || ss.insertSheet(tabName);
 
   var kept = [];
@@ -150,8 +226,13 @@ function writeMerged(tabName, header, freshRows, keyCols, range) {
   if (lastRow > 1) {
     var existing = sheet.getRange(2, 1, lastRow - 1, header.length).getValues();
     for (var i = 0; i < existing.length; i++) {
-      var d = asDate(existing[i][0]);
+      var d = metaAsDate(existing[i][0]);
       if (!d) continue;
+      /* Drop anything before the floor. Without this, rows written by an
+       * earlier run with a wider window survive forever — the refresh only
+       * replaces what it re-fetched, so March–May data would outlive the
+       * decision to keep only June onward. */
+      if (d < META_START_DATE) continue;
       if (d < range.since || d > range.until) {
         existing[i][0] = d;
         kept.push(existing[i]);
@@ -170,16 +251,29 @@ function writeMerged(tabName, header, freshRows, keyCols, range) {
 
   sheet.clear();
   sheet.getRange(1, 1, 1, header.length).setValues([header]);
-  if (all.length) sheet.getRange(2, 1, all.length, header.length).setValues(all);
-  sheet.getRange(2, 1, Math.max(all.length, 1), 1).setNumberFormat('@');
+
+  /* The date column must be formatted as text BEFORE the values are written.
+   *
+   * Sheets coerces a string like "2026-09-08" into a date value on write, and
+   * then renders it in the spreadsheet's locale. The dashboard reads this tab
+   * through /export?format=csv and expects ISO, so a coerced column arrives as
+   * "9/8/2026" — which the reader either mis-parses or drops. Applying the
+   * text format afterwards does not undo a coercion that has already happened,
+   * which is why the order here matters and is not a style choice. */
+  if (all.length) {
+    sheet.getRange(2, 1, all.length, 1).setNumberFormat('@');
+    sheet.getRange(2, 1, all.length, header.length).setValues(all);
+  }
   Logger.log(tabName + ': kept ' + kept.length + ' older rows, wrote ' + all.length + ' total');
 }
 
-function stampMeta() {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+function metaStampRun() {
+  var ss = SpreadsheetApp.openById(META_SPREADSHEET_ID);
   var sheet = ss.getSheetByName('meta');
   if (!sheet) return;
-  var keys = sheet.getRange(1, 1, sheet.getLastRow(), 1).getValues();
+  var last = sheet.getLastRow();
+  if (last < 1) { sheet.getRange(1, 1, 1, 2).setValues([['ads_meta_last_run', new Date().toISOString()]]); return; }
+  var keys = sheet.getRange(1, 1, last, 1).getValues();
   var target = -1;
   for (var i = 0; i < keys.length; i++) {
     if (String(keys[i][0]) === 'ads_meta_last_run') { target = i + 1; break; }
@@ -190,21 +284,23 @@ function stampMeta() {
 
 /* ---------- helpers ---------- */
 
-function dateRange(days) {
+function metaDateRange(days) {
   var tz = Session.getScriptTimeZone() || 'UTC';
   var until = new Date();
   var since = new Date(until.getTime() - days * 24 * 60 * 60 * 1000);
+  var sinceStr = Utilities.formatDate(since, tz, 'yyyy-MM-dd');
+  if (sinceStr < META_START_DATE) sinceStr = META_START_DATE;
   return {
-    since: Utilities.formatDate(since, tz, 'yyyy-MM-dd'),
+    since: sinceStr,
     until: Utilities.formatDate(until, tz, 'yyyy-MM-dd'),
   };
 }
 
-function asDate(v) {
+function metaAsDate(v) {
   if (v instanceof Date) return Utilities.formatDate(v, 'UTC', 'yyyy-MM-dd');
   var s = String(v || '').trim();
   return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : '';
 }
 
-function int(v) { return Math.round(Number(v || 0)); }
-function money(v) { return Math.round(Number(v || 0) * 100) / 100; }
+function metaInt(v) { return Math.round(Number(v || 0)); }
+function metaMoney(v) { return Math.round(Number(v || 0) * 100) / 100; }
