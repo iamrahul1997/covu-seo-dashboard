@@ -491,75 +491,6 @@ function hostTotals(pages) {
   return out.sort(function (a, b) { return b.i - a.i; });
 }
 
-/* Search Console URLs are absolute; HubSpot keys are host+path, or a numeric
- * content id for landing pages. Normalise both so the two can be joined where a
- * match exists. */
-function normPath(u) {
-  return String(u).replace(/^https?:\/\//, '').replace(/\/+$/, '').toLowerCase();
-}
-
-/* HubSpot supplies the half Search Console cannot: what the visit did. Joined
- * onto the page list so organic reach and conversion sit on one row. */
-function renderHubSpotCard(pages) {
-  var hs = D.hubspot || { connected: false };
-  var head = '<div class="card g"><h2>Engagement &amp; conversions (HubSpot)</h2>';
-
-  if (!hs.connected || !hs.rows || !hs.rows.length) {
-    /* The remedy depends on the failure. Telling someone to add a token they
-     * already added, because the real problem is its scopes, wastes their time. */
-    var reason = String(hs.reason || 'no token');
-    var fix;
-    if (reason.indexOf('not set') >= 0) {
-      fix = 'Add <b>HUBSPOT_TOKEN</b> to the Vercel project\'s environment variables — a '
-        + 'HubSpot private-app token — then redeploy.';
-    } else if (reason.indexOf('403') >= 0) {
-      fix = 'The token is reaching HubSpot but lacks permission. In HubSpot go to '
-        + '<b>Settings → Integrations → Private Apps</b>, open the app, and under <b>Scopes</b> '
-        + 'enable <b>traffic-analytics-api-access</b> (or <b>cms-analytics-api-access</b>). Save, '
-        + 'then check whether HubSpot issued a new token — if so, update it in Vercel.';
-    } else if (reason.indexOf('401') >= 0) {
-      fix = 'HubSpot rejected the token outright. It was most likely rotated — copy the current '
-        + 'value from the private app and update <b>HUBSPOT_TOKEN</b> in Vercel.';
-    } else {
-      fix = 'The call reached HubSpot but the response did not contain the expected fields. '
-        + 'The reason above lists what came back.';
-    }
-    return head + '<div class="sub">Views, form submissions and contacts per page</div>'
-      + '<div class="note">Not connected — ' + esc(reason) + '<br><br>' + fix + '</div></div>';
-  }
-
-  var byPath = {};
-  pages.forEach(function (p) { byPath[normPath(p.k)] = p; });
-
-  var rows = hs.rows.map(function (r) {
-    var match = byPath[normPath(r.k)];
-    return {
-      k: r.k, views: r.views, subs: r.subs, contacts: r.contacts, bounce: r.bounce,
-      clicks: match ? match.c : null,
-    };
-  });
-  var subs = rows.reduce(function (a, r) { return a + r.subs; }, 0);
-  var contacts = rows.reduce(function (a, r) { return a + r.contacts; }, 0);
-  var views = rows.reduce(function (a, r) { return a + r.views; }, 0);
-
-  return head
-    + '<div class="sub">' + (hs.start ? fmtDate(hs.start) + ' → ' + fmtDate(hs.end) : 'rolling 90 days')
-    + ' · ' + F(views) + ' views · ' + F(subs) + ' submissions · ' + F(contacts) + ' contacts</div>'
-    + '<div class="tw"><table><thead><tr><th>Page</th><th>Views</th><th>Organic clicks</th>'
-    + '<th>Submissions</th><th>Contacts</th><th>Bounce</th></tr></thead><tbody>'
-    + rows.slice(0, 30).map(function (r) {
-      return '<tr><td class="q" title="' + esc(r.k) + '">' + esc(r.k) + '</td>'
-        + '<td>' + F(r.views) + '</td>'
-        + '<td class="p">' + (r.clicks === null ? '—' : F(r.clicks)) + '</td>'
-        + '<td>' + F(r.subs) + '</td><td>' + F(r.contacts) + '</td>'
-        + '<td class="p">' + F1(r.bounce) + '%</td></tr>';
-    }).join('') + '</tbody></table></div>'
-    + '<div class="note">HubSpot counts <b>all</b> traffic; the organic clicks column is '
-    + 'Search Console only, over the range selected above — so views are normally much higher. '
-    + 'A dash means no Search Console match, which is expected for '
-    + 'go.covu.com landing pages and HubSpot-hosted URLs.</div></div>';
-}
-
 function renderPages(w) {
   var pages = aggregate(D.pStr, D.pW, w.a, w.b, false)
     .sort(function (a, b) { return b.c - a.c; });
@@ -591,8 +522,7 @@ function renderPages(w) {
     + '</div>'
     + '<div class="card g"><h2>Which query lands on which page</h2>'
     + '<div class="sub">Rolling ' + (D.meta.queryPageWindow || 90) + '-day window · not filtered by the range above</div>'
-    + pairTable(pairs, 25) + '</div>'
-    + renderHubSpotCard(pages);
+    + pairTable(pairs, 25) + '</div>';
 }
 
 /* blog.covu.com is a separate Search Console property with its own, much
@@ -777,21 +707,7 @@ function renderAEO(w, queries) {
 
   var appearance = D.searchAppearance || [];
 
-  /* Conversion detail lives on the Pages tab, joined to the page list, so it is
-   * a one-line summary here rather than a second copy of the same table. */
-  var hs = D.hubspot || { connected: false, reason: 'not configured' };
-  var hsBlock = '';
-  if (hs.connected && hs.rows && hs.rows.length) {
-    var hsSubs = hs.rows.reduce(function (a, r) { return a + r.subs; }, 0);
-    var hsContacts = hs.rows.reduce(function (a, r) { return a + r.contacts; }, 0);
-    hsBlock = '<div class="card g"><h2>Did any of it convert?</h2>'
-      + '<div class="sub">HubSpot, last 90 days across the whole estate</div>'
-      + '<div class="note"><b>' + F(hsSubs) + '</b> form submissions and <b>' + F(hsContacts)
-      + '</b> new contacts. Answer-engine traffic is measured in single-digit sessions, so it is not '
-      + 'yet a meaningful share of these — the per-page breakdown is on the <b>Pages</b> tab.</div></div>';
-  }
-
-  /* GA form events give a conversion signal without HubSpot. */
+  /* GA form events are the conversion signal available here. */
   var evBlock = '';
   if (ga.events && ga.events.length) {
     var evTotals = {};
@@ -825,8 +741,7 @@ function renderAEO(w, queries) {
         + '<div class="sub">How the site shows up in search features · all-time snapshot</div>'
         + dimTable(appearance, 'Appearance') + '</div>'
       : '')
-    + evBlock
-    + hsBlock;
+    + evBlock;
 }
 
 /* ---------- paid media ---------- */
@@ -1333,8 +1248,7 @@ function renderKpis() {
     E('kpiNote').innerHTML = '<div class="note" style="margin:0 0 16px">'
       + 'Link clicks, not all clicks — reactions and profile taps count in Meta\'s click total but '
       + 'never reach the site. Cost per lead is shown green when it falls. '
-      + 'Leads come from Meta\'s own attribution; HubSpot counts them differently, and the two will '
-      + 'not agree.</div>';
+      + 'Leads are Meta\'s own attribution.</div>';
     return;
   }
 

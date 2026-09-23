@@ -172,12 +172,6 @@ function weekOf(dateStr) {
   return d.toISOString().slice(0, 10);
 }
 
-function addDays(dateStr, n) {
-  const d = new Date(dateStr + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
 // Rolls [date, key, clicks, impressions, ctr, position] rows into per-week
 // tuples against a shared week index, interning the key strings so the payload
 // ships each query/page label exactly once.
@@ -439,94 +433,6 @@ function keywordSnapshot(rows, limit) {
   return limit ? out.slice(0, limit) : out;
 }
 
-// ---------- HubSpot ----------
-
-// Optional. Set HUBSPOT_TOKEN (a private-app token with content analytics read)
-// in Vercel project settings to light up the conversion panel. Without it the
-// dashboard renders normally and the panel explains that it is not connected.
-async function fetchHubSpot(startDate, endDate) {
-  const token = process.env.HUBSPOT_TOKEN;
-  if (!token) return { connected: false, reason: 'HUBSPOT_TOKEN not set' };
-
-  const compact = (d) => d.replace(/-/g, '');
-  const url = 'https://api.hubapi.com/analytics/v2/reports/pages/total'
-    + `?start=${compact(startDate)}&end=${compact(endDate)}&limit=100`;
-
-  try {
-    const res = await fetch(url, {
-      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-    });
-
-    if (!res.ok) {
-      // Surface HubSpot's own message. 403 almost always means the private app
-      // is missing the business-intelligence scope; 401 means a bad or rotated
-      // token. Without this the panel just says "HTTP 403" and stalls.
-      let detail = '';
-      try {
-        const body = await res.text();
-        const parsed = JSON.parse(body);
-        detail = parsed.message || parsed.error || body.slice(0, 200);
-      } catch { detail = ''; }
-      // 403 here is always a scope problem. HubSpot names the scopes it wants
-      // in the message body, so pass that through rather than paraphrasing —
-      // an earlier guess of "business-intelligence" was simply wrong.
-      const hint = res.status === 403
-        ? ' — the private app needs the traffic-analytics-api-access or'
-          + ' cms-analytics-api-access scope'
-        : res.status === 401 ? ' — token rejected; it may have been rotated' : '';
-      return {
-        connected: false,
-        reason: `HubSpot HTTP ${res.status}${hint}${detail ? ': ' + detail : ''}`,
-      };
-    }
-
-    const json = await res.json();
-
-    /* HubSpot's analytics responses have appeared in three shapes over the
-     * years: {breakdowns:{key:metrics}}, a flat {key:metrics} map, and
-     * {results:[{...}]}. Accept all three rather than silently rendering
-     * nothing when the shape is not the one guessed. */
-    let entries = [];
-    if (Array.isArray(json)) {
-      entries = json.map((v) => [v.path || v.url || v.name || v.id || '(unknown)', v]);
-    } else if (Array.isArray(json.results)) {
-      entries = json.results.map((v) => [v.path || v.url || v.name || v.id || '(unknown)', v]);
-    } else {
-      entries = Object.entries(json.breakdowns || json);
-    }
-
-    const rows = [];
-    for (const [key, v] of entries) {
-      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
-      const views = int(v.rawViews ?? v.pageviews ?? v.visits ?? v.sessions);
-      const subs = int(v.submissions ?? v.formSubmissions);
-      const contacts = int(v.contacts ?? v.newContacts);
-      if (!views && !subs && !contacts) continue;
-      rows.push({
-        k: String(key),
-        views,
-        subs,
-        contacts,
-        bounce: num(v.bounceRate) * 100,
-        time: num(v.timePerPageview ?? v.timePerSession),
-      });
-    }
-    rows.sort((a, b) => b.views - a.views);
-
-    if (!rows.length) {
-      // Better than an empty table: name the keys we got so the shape can be fixed.
-      return {
-        connected: false,
-        reason: 'HubSpot responded but no rows matched the expected fields. Top-level keys: '
-          + Object.keys(json).slice(0, 8).join(', '),
-      };
-    }
-    return { connected: true, rows: rows.slice(0, 40), start: startDate, end: endDate };
-  } catch (err) {
-    return { connected: false, reason: String((err && err.message) || err) };
-  }
-}
-
 // ---------- payload ----------
 
 let cache = null;
@@ -561,14 +467,6 @@ async function build() {
   const maxDay = (rows) => rows.reduce((m, r) => { const d = day(r.date); return d > m ? d : m; }, '');
   const dataThrough = maxDay(t.daily_totals);
   const queriesThrough = maxDay(t.queries);
-
-  const hubspot = await fetchHubSpot(addDays(dataThrough, -89), dataThrough);
-  /* One line of ops logging so the integration's health is visible in Vercel's
-   * runtime logs without needing a signed-in session to inspect the payload.
-   * Deliberately records only the outcome — never the token, never any row. */
-  console.log('hubspot:', hubspot.connected
-    ? 'connected, ' + hubspot.rows.length + ' rows'
-    : 'not connected — ' + hubspot.reason);
 
   return {
     meta: {
@@ -622,7 +520,6 @@ async function build() {
         through: maxDay(t.ads_meta_daily || []) || null,
       },
     },
-    hubspot,
   };
 }
 
