@@ -56,9 +56,13 @@ var HUBSPOT_PAID_DESTINATIONS = [
 
 var HUBSPOT_HEADER = [
   'booking_date', 'contact_id', 'email', 'conversion_event', 'latest_source',
-  'source_detail_1', 'source_detail_2', 'last_url', 'meeting_booked',
-  'attribution', 'needs_review', 'review_reason',
+  'source_detail_1', 'campaign', 'utm_source', 'utm_campaign', 'last_url',
+  'meeting_booked', 'attribution', 'needs_review', 'review_reason',
 ];
+
+/* Column positions, by name. Adding a column shifted these once and the run
+ * log started grouping by URL instead of attribution — cheap to prevent. */
+var HUBSPOT_COL = { attribution: 11, needsReview: 12 };
 
 var HUBSPOT_PROPERTIES = [
   'email', 'createdate',
@@ -67,6 +71,9 @@ var HUBSPOT_PROPERTIES = [
   'hs_latest_source', 'hs_latest_source_data_1', 'hs_latest_source_data_2',
   'hs_analytics_last_url', 'hs_analytics_first_url',
   'engagements_last_meeting_booked',
+  /* Carried for context and campaign naming, NOT for attribution — see
+   * hubspotAttribute. Verified 2026-09-23 against live records. */
+  'utm_source', 'utm_medium', 'utm_campaign',
 ];
 
 function hubspotMain() { hubspotRun(HUBSPOT_LOOKBACK_DAYS); }
@@ -94,6 +101,11 @@ function hubspotRun(days) {
     var bookingDate = hubspotDay(p.recent_conversion_date);
     if (!bookingDate || bookingDate < HUBSPOT_START_DATE) return;
 
+    /* Internal test records exist in this portal (test@covu.com, rahul@covu.com
+     * and a disposable rahul+utmtest@covu.com) and would otherwise be counted
+     * as bookings. */
+    if (/@covu\.com$/i.test(String(p.email || ''))) return;
+
     var verdict = hubspotAttribute(p);
     var review = hubspotReview(p, bookingDate);
 
@@ -104,7 +116,12 @@ function hubspotRun(days) {
       event,
       p.hs_latest_source || '',
       p.hs_latest_source_data_1 || '',
+      /* data_2 is the campaign name and is populated for BOTH website leads and
+       * GUIDE Instant Forms, unlike utm_campaign which is blank for Instant
+       * Forms entirely. */
       p.hs_latest_source_data_2 || '',
+      p.utm_source || '',
+      p.utm_campaign || '',
       p.hs_analytics_last_url || '',
       hubspotDay(p.engagements_last_meeting_booked) || '',
       verdict,
@@ -116,10 +133,14 @@ function hubspotRun(days) {
   rows.sort(function (a, b) { return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0; });
   hubspotWrite(rows);
 
-  var meta = {};
-  rows.forEach(function (r) { meta[r[9]] = (meta[r[9]] || 0) + 1; });
-  Logger.log('bookings: ' + rows.length + ' — ' + JSON.stringify(meta));
-  Logger.log('needing review: ' + rows.filter(function (r) { return r[10]; }).length);
+  var tally = {};
+  rows.forEach(function (r) {
+    var k = r[HUBSPOT_COL.attribution];
+    tally[k] = (tally[k] || 0) + 1;
+  });
+  Logger.log('bookings: ' + rows.length + ' — ' + JSON.stringify(tally));
+  Logger.log('needing review: '
+    + rows.filter(function (r) { return r[HUBSPOT_COL.needsReview]; }).length);
   hubspotStampRun();
 }
 
@@ -166,7 +187,25 @@ function hubspotReview(p, bookingDate) {
     return 'conversion dated ' + bookingDate + ' but meeting was ' + meeting
       + ' — likely a return visit; re-date to the original submit';
   }
-  if (String(p.hs_latest_source || '').toUpperCase() === 'OFFLINE') {
+  /* UTM properties persist from an earlier touch and are NOT refreshed by a
+   * later conversion. One live record carries utm_source=google /
+   * utm_campaign=KB_Brand while its latest conversion is a Facebook GUIDE lead
+   * ad — attributing on the UTM would file it under Google. Latest source wins;
+   * the disagreement is surfaced rather than silently resolved. */
+  var utmSource = String(p.utm_source || '').toLowerCase();
+  var latest = String(p.hs_latest_source || '').toUpperCase();
+  var utmSaysMeta = utmSource.indexOf('facebook') >= 0 || utmSource.indexOf('meta') >= 0
+    || utmSource.indexOf('instagram') >= 0;
+  if (utmSource && latest === 'PAID_SOCIAL' && !utmSaysMeta) {
+    return 'utm_source=' + utmSource + ' contradicts latest source PAID_SOCIAL — '
+      + 'stale UTMs from an earlier touch; attributed on latest activity';
+  }
+  if (utmSource && utmSaysMeta && latest && latest !== 'PAID_SOCIAL' && latest !== 'DIRECT_TRAFFIC') {
+    return 'utm_source=' + utmSource + ' says Meta but latest source is ' + latest
+      + ' — check which touch actually drove the booking';
+  }
+
+  if (latest === 'OFFLINE') {
     return 'latest source is OFFLINE (Salesforce touched the record) — judge on last_url';
   }
   if (!p.hs_latest_source && !p.hs_analytics_last_url) {
