@@ -57,8 +57,8 @@ var META_START_DATE = '2026-06-01';
 var META_DAILY_TAB = 'ads_meta_daily';
 var META_AD_TAB = 'ads_meta_ad';
 
-var META_DAILY_HEADER = ['date', 'campaign', 'adset', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings'];
-var META_AD_HEADER = ['date', 'ad', 'ad_id', 'adset', 'campaign', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings', 'thumbnail'];
+var META_DAILY_HEADER = ['date', 'campaign', 'objective', 'adset', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings'];
+var META_AD_HEADER = ['date', 'ad', 'ad_id', 'adset', 'campaign', 'objective', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings', 'thumbnail'];
 
 function metaMain() { metaRun(META_LOOKBACK_DAYS); }
 /* Everything from META_START_DATE to today; the clamp in metaDateRange does the
@@ -73,11 +73,13 @@ function metaRun(days) {
   Logger.log('Pulling ' + range.since + ' → ' + range.until);
   var meetingTypes = metaMeetingActionTypes(token);
   var thumbs = metaCreativeThumbnails(token);
+  var objectives = metaCampaignObjectives(token);
 
   var daily = metaFetchInsights(token, range, 'adset', function (r) {
     return [
       r.date_start,
       r.campaign_name || '',
+      objectives[String(r.campaign_name || '')] || '',
       r.adset_name || '',
       metaInt(r.impressions),
       metaInt(r.clicks),
@@ -96,6 +98,7 @@ function metaRun(days) {
       String(r.ad_id || ''),
       r.adset_name || '',
       r.campaign_name || '',
+      objectives[String(r.campaign_name || '')] || '',
       metaInt(r.impressions),
       metaInt(r.clicks),
       metaLinkClicks(r),
@@ -149,6 +152,44 @@ function metaFetchInsights(token, range, level, mapRow) {
   }
   Logger.log('level=' + level + ': ' + rows.length + ' rows over ' + pages + ' page(s)');
   return rows;
+}
+
+/* What each campaign was actually bought to do.
+ *
+ * Without this every creative is graded on cost per lead, including campaigns
+ * that never optimised for leads. TOF LINK CLICK IMPRESSION takes 242k
+ * impressions and 1,291 clicks for zero leads — by design — and would read KILL
+ * against a lead benchmark it was never competing in.
+ *
+ * Keyed by campaign NAME because that is what insights returns and what the
+ * sheet keys on. Names are unique within an account.
+ */
+function metaCampaignObjectives(token) {
+  var map = {};
+  try {
+    var url = 'https://graph.facebook.com/' + META_API_VERSION + '/' + META_AD_ACCOUNT
+      + '/campaigns?fields=name,objective,optimization_goal&limit=200'
+      + '&access_token=' + encodeURIComponent(token);
+    var pages = 0;
+    while (url && pages < 20) {
+      var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) {
+        Logger.log('campaign objectives unavailable (HTTP ' + res.getResponseCode()
+          + ') — creatives will be graded on whichever metric their campaign produced');
+        return map;
+      }
+      var json = JSON.parse(res.getContentText());
+      (json.data || []).forEach(function (c) {
+        if (c.name) map[String(c.name)] = String(c.objective || c.optimization_goal || '');
+      });
+      url = json.paging && json.paging.next ? json.paging.next : null;
+      pages++;
+    }
+    Logger.log('campaign objectives: ' + Object.keys(map).length + ' campaigns');
+  } catch (e) {
+    Logger.log('campaign objective lookup failed: ' + e.message);
+  }
+  return map;
 }
 
 /* Creative thumbnails, fetched once per run and joined to insights on ad_id.
