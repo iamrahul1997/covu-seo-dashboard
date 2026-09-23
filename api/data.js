@@ -41,6 +41,14 @@ const TABS = {
   ga_event_landing: '2051391862',
   ads_google_daily: '694389940',
   ads_google_keyword: '1327370572',
+  /* Meta's gids are unknown until its Apps Script first creates the tabs. A
+   * null gid means "resolve by name", so Meta appears the moment the script
+   * runs rather than waiting on a code change. Swap in real gids afterwards:
+   * name lookup goes through /gviz/tq, which forces one type per column. Every
+   * column in these two tabs is uniform so it is safe here — it was the
+   * mixed-type `meta` tab that gviz destroyed. */
+  ads_meta_daily: null,
+  ads_meta_ad: null,
 };
 
 /* Tabs written by the ads pipeline rather than the original GSC job. They may
@@ -48,6 +56,29 @@ const TABS = {
  * whole dashboard down — the organic data is the part people rely on. */
 const OPTIONAL_TABS = new Set(['ads_google_daily', 'ads_google_keyword',
   'ads_meta_daily', 'ads_meta_ad']);
+
+/* Columns that prove a fetch returned the tab we asked for.
+ *
+ * This is not defensive padding. Asking /gviz/tq for a sheet name that does not
+ * exist does NOT fail — it returns the FIRST sheet in the workbook. Requesting
+ * the not-yet-created `ads_meta_daily` came back holding `queries` data, and
+ * because both have `impressions` and `clicks` columns it parsed cleanly and
+ * rendered 69 weeks of organic search as Meta ad performance. A tab is only
+ * accepted if it carries a column no other tab has. */
+const TAB_SIGNATURE = {
+  ads_google_daily: ['date', 'campaign', 'cost'],
+  ads_google_keyword: ['date', 'keyword', 'cost'],
+  ads_meta_daily: ['date', 'campaign', 'adset', 'spend'],
+  ads_meta_ad: ['date', 'ad', 'adset', 'spend'],
+};
+
+function matchesSignature(name, rows) {
+  const want = TAB_SIGNATURE[name];
+  if (!want) return true;
+  if (!rows.length) return true;      // genuinely empty is fine
+  const have = Object.keys(rows[0]);
+  return want.every((col) => have.includes(col));
+}
 
 // ---------- CSV ----------
 
@@ -90,22 +121,37 @@ async function get(url) {
   return res.text();
 }
 
+async function byName(name) {
+  const csv = await get(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq`
+    + `?tqx=out:csv&headers=1&sheet=${encodeURIComponent(name)}`);
+  return objectify(parseCSV(csv));
+}
+
 async function fetchTab(name) {
   const gid = TABS[name];
+  let rows = null;
   try {
-    const csv = await get(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`);
-    return objectify(parseCSV(csv));
+    // Never build an /export URL without a gid — an empty gid also returns the
+    // first sheet rather than failing.
+    rows = gid
+      ? objectify(parseCSV(await get(
+        `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`)))
+      : await byName(name);
   } catch (err) {
     try {
       // A renamed or recreated tab changes its gid; fall back to lookup by name.
-      const csv = await get(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq`
-        + `?tqx=out:csv&headers=1&sheet=${encodeURIComponent(name)}`);
-      return objectify(parseCSV(csv));
+      rows = await byName(name);
     } catch (err2) {
       if (OPTIONAL_TABS.has(name)) return [];
       throw new Error(`${name}: ${err2.message}`);
     }
   }
+
+  if (!matchesSignature(name, rows)) {
+    if (OPTIONAL_TABS.has(name)) return [];   // tab does not exist yet
+    throw new Error(`${name}: fetched a sheet that is not ${name}`);
+  }
+  return rows;
 }
 
 // ---------- helpers ----------
@@ -354,11 +400,15 @@ function rollUpAds(rows, weekIndex, keyField) {
     if (ci === undefined) { ci = names.length; idx.set(name, ci); names.push(name); }
     const id = wi + ' ' + ci;
     let b = cells.get(id);
-    if (!b) { b = [wi, ci, 0, 0, 0, 0]; cells.set(id, b); }
+    if (!b) { b = [wi, ci, 0, 0, 0, 0, 0]; cells.set(id, b); }
     b[2] += int(r.impressions);
     b[3] += int(r.clicks);
     b[4] += Math.round(num(r.cost !== undefined ? r.cost : r.spend) * 100);
     b[5] += Math.round(num(r.conversions !== undefined ? r.conversions : r.leads) * 100);
+    /* Meta separates link clicks from all clicks — reactions and profile taps
+     * count in `clicks` but never reach the site, so link CTR is the honest
+     * hook metric. Google has no equivalent and leaves this zero. */
+    b[6] += int(r.link_clicks);
   }
   return {
     keys: names,

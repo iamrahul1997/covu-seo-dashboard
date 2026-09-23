@@ -71,6 +71,18 @@ a single type and silently blanks disagreeing cells — which wiped out the whol
 `meta` tab. The gid map is at the top of `api/data.js` with instructions for
 regenerating it.
 
+Two rules exist because of how badly Sheets fails at this:
+
+- **Never build an `/export` URL without a gid.** An empty gid returns the
+  *first* sheet rather than an error.
+- **Every optional tab declares a signature** — columns that prove the fetch
+  returned the tab we asked for. Requesting a sheet name that does not exist via
+  `/gviz/tq` does not fail either; it returns the first sheet. Asking for the
+  not-yet-created `ads_meta_daily` came back holding `queries` data, and since
+  both have `impressions` and `clicks` it parsed cleanly and rendered 69 weeks of
+  organic search as Meta ad performance. A tab whose columns do not match its
+  signature is treated as absent.
+
 ## Access control
 
 `middleware.js` gates every route behind Google sign-in, restricted to one email
