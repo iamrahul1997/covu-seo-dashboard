@@ -25,6 +25,11 @@
 
 var SPREADSHEET_ID = '1IuI7NqgsrourIz1BeH44zx_Wp5_xSaGffkxYS1eYXXc';
 var AD_ACCOUNT = 'act_4460021897602415';   // COVU Ads
+/* Graph API version. Meta retires a version roughly two years after release,
+ * and this one was pinned in August 2026 — if a run fails with a deprecation
+ * or "unsupported version" error, raise this to the current version shown at
+ * developers.facebook.com/docs/graph-api/changelog. Nothing else needs to
+ * change; the fields used here are stable across versions. */
 var API_VERSION = 'v21.0';
 var LOOKBACK_DAYS = 90;
 var BACKFILL_DAYS = 365;
@@ -170,8 +175,19 @@ function writeMerged(tabName, header, freshRows, keyCols, range) {
 
   sheet.clear();
   sheet.getRange(1, 1, 1, header.length).setValues([header]);
-  if (all.length) sheet.getRange(2, 1, all.length, header.length).setValues(all);
-  sheet.getRange(2, 1, Math.max(all.length, 1), 1).setNumberFormat('@');
+
+  /* The date column must be formatted as text BEFORE the values are written.
+   *
+   * Sheets coerces a string like "2026-09-08" into a date value on write, and
+   * then renders it in the spreadsheet's locale. The dashboard reads this tab
+   * through /export?format=csv and expects ISO, so a coerced column arrives as
+   * "9/8/2026" — which the reader either mis-parses or drops. Applying the
+   * text format afterwards does not undo a coercion that has already happened,
+   * which is why the order here matters and is not a style choice. */
+  if (all.length) {
+    sheet.getRange(2, 1, all.length, 1).setNumberFormat('@');
+    sheet.getRange(2, 1, all.length, header.length).setValues(all);
+  }
   Logger.log(tabName + ': kept ' + kept.length + ' older rows, wrote ' + all.length + ' total');
 }
 
@@ -179,7 +195,9 @@ function stampMeta() {
   var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   var sheet = ss.getSheetByName('meta');
   if (!sheet) return;
-  var keys = sheet.getRange(1, 1, sheet.getLastRow(), 1).getValues();
+  var last = sheet.getLastRow();
+  if (last < 1) { sheet.getRange(1, 1, 1, 2).setValues([['ads_meta_last_run', new Date().toISOString()]]); return; }
+  var keys = sheet.getRange(1, 1, last, 1).getValues();
   var target = -1;
   for (var i = 0; i < keys.length; i++) {
     if (String(keys[i][0]) === 'ads_meta_last_run') { target = i + 1; break; }
