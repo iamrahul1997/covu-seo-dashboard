@@ -41,14 +41,8 @@ const TABS = {
   ga_event_landing: '2051391862',
   ads_google_daily: '694389940',
   ads_google_keyword: '1327370572',
-  /* Meta's gids are unknown until its Apps Script first creates the tabs. A
-   * null gid means "resolve by name", so Meta appears the moment the script
-   * runs rather than waiting on a code change. Swap in real gids afterwards:
-   * name lookup goes through /gviz/tq, which forces one type per column. Every
-   * column in these two tabs is uniform so it is safe here — it was the
-   * mixed-type `meta` tab that gviz destroyed. */
-  ads_meta_daily: null,
-  ads_meta_ad: null,
+  ads_meta_daily: '843438716',
+  ads_meta_ad: '656026357',
 };
 
 /* Tabs written by the ads pipeline rather than the original GSC job. They may
@@ -68,8 +62,8 @@ const OPTIONAL_TABS = new Set(['ads_google_daily', 'ads_google_keyword',
 const TAB_SIGNATURE = {
   ads_google_daily: ['date', 'campaign', 'cost'],
   ads_google_keyword: ['date', 'keyword', 'cost'],
-  ads_meta_daily: ['date', 'campaign', 'adset', 'spend'],
-  ads_meta_ad: ['date', 'ad', 'adset', 'spend'],
+  ads_meta_daily: ['date', 'campaign', 'adset', 'spend', 'leads'],
+  ads_meta_ad: ['date', 'ad', 'adset', 'spend', 'leads'],
 };
 
 function matchesSignature(name, rows) {
@@ -400,7 +394,7 @@ function rollUpAds(rows, weekIndex, keyField) {
     if (ci === undefined) { ci = names.length; idx.set(name, ci); names.push(name); }
     const id = wi + ' ' + ci;
     let b = cells.get(id);
-    if (!b) { b = [wi, ci, 0, 0, 0, 0, 0]; cells.set(id, b); }
+    if (!b) { b = [wi, ci, 0, 0, 0, 0, 0, 0]; cells.set(id, b); }
     b[2] += int(r.impressions);
     b[3] += int(r.clicks);
     b[4] += Math.round(num(r.cost !== undefined ? r.cost : r.spend) * 100);
@@ -409,6 +403,10 @@ function rollUpAds(rows, weekIndex, keyField) {
      * count in `clicks` but never reach the site, so link CTR is the honest
      * hook metric. Google has no equivalent and leaves this zero. */
     b[6] += int(r.link_clicks);
+    /* meeting_confirmed, Meta's custom conversion. Present only on Meta rows,
+     * and expected to be 0 across the board until covu.com's forms redirect to
+     * a thank-you page — the event has nowhere to fire from today. */
+    b[7] += int(r.meetings);
   }
   return {
     keys: names,

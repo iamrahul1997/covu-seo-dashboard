@@ -866,13 +866,14 @@ function adsTotals(table, a, b) {
 function adsByKey(table, a, b) {
   if (!table || !table.keys.length) return [];
   var out = table.keys.map(function (k) {
-    return { k: k, i: 0, c: 0, cents: 0, conv: 0, lc: 0 };
+    return { k: k, i: 0, c: 0, cents: 0, conv: 0, lc: 0, mtg: 0 };
   });
   table.rows.forEach(function (r) {
     if (r[0] < a || r[0] > b) return;
     var e = out[r[1]];
     if (!e) return;
-    e.i += r[2]; e.c += r[3]; e.cents += r[4]; e.conv += r[5]; e.lc += (r[6] || 0);
+    e.i += r[2]; e.c += r[3]; e.cents += r[4]; e.conv += r[5];
+    e.lc += (r[6] || 0); e.mtg += (r[7] || 0);
   });
   return out.filter(function (e) { return e.i > 0 || e.cents > 0; })
     .sort(function (x, y) { return y.cents - x.cents; });
@@ -995,6 +996,7 @@ function metaTable(rows, label) {
   if (!rows.length) return '<div class="note">No spend in this range</div>';
   return '<div class="tw"><table><thead><tr><th>' + label + '</th><th>Spend</th><th>Impr.</th>'
     + '<th>Link clicks</th><th>Link CTR</th><th>Leads</th><th>Cost / lead</th>'
+    + '<th>Meetings</th>'
     + '</tr></thead><tbody>'
     + rows.map(function (r) {
       var leads = r.conv / 100;
@@ -1003,7 +1005,8 @@ function metaTable(rows, label) {
         + '<td>' + F(r.lc) + '</td>'
         + '<td>' + F1(r.i ? r.lc / r.i * 100 : 0) + '%</td>'
         + '<td>' + F1(leads) + '</td>'
-        + '<td class="p">' + (leads ? money(r.cents / leads) : '—') + '</td></tr>';
+        + '<td class="p">' + (leads ? money(r.cents / leads) : '—') + '</td>'
+        + '<td>' + F(r.mtg) + '</td></tr>';
     }).join('') + '</tbody></table></div>';
 }
 

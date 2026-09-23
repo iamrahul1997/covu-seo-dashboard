@@ -19,6 +19,9 @@
  *      add META_TOKEN with that value. Never paste it into the code.
  *   6. Run metaBackfill() once, then Triggers → add a daily trigger on metaMain().
  *
+ * SCOPE: ad account act_4460021897602415 only, June 2026 onward. Tracks leads
+ * and the meeting_confirmed custom conversion.
+ *
  * Idempotent: refreshes the trailing 90 days and preserves older history, so a
  * daily run corrects late-attributed leads without duplicating anything.
  *
@@ -38,17 +41,29 @@ var META_AD_ACCOUNT = 'act_4460021897602415';   // COVU Ads
  * developers.facebook.com/docs/graph-api/changelog. Nothing else needs to
  * change; the fields used here are stable across versions. */
 var META_API_VERSION = 'v21.0';
+/* Custom conversion to track alongside leads. Meta does NOT expose custom
+ * events by name in the insights `actions` array — they arrive as
+ * `offsite_conversion.custom.<id>` — so the id is resolved by name at run time
+ * from /customconversions. Rename here if the conversion is renamed in Events
+ * Manager. */
+var META_MEETING_EVENT = 'meeting_confirmed';
 var META_LOOKBACK_DAYS = 90;
-var META_BACKFILL_DAYS = 365;
+
+/* Hard floor on history. Nothing before this date is ever requested, by either
+ * the daily run or a backfill — Rahul only wants June 2026 onward, and an
+ * absolute date cannot drift the way a day count does. */
+var META_START_DATE = '2026-06-01';
 
 var META_DAILY_TAB = 'ads_meta_daily';
 var META_AD_TAB = 'ads_meta_ad';
 
-var META_DAILY_HEADER = ['date', 'campaign', 'adset', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads'];
-var META_AD_HEADER = ['date', 'ad', 'adset', 'campaign', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads'];
+var META_DAILY_HEADER = ['date', 'campaign', 'adset', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings'];
+var META_AD_HEADER = ['date', 'ad', 'adset', 'campaign', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads', 'meetings'];
 
 function metaMain() { metaRun(META_LOOKBACK_DAYS); }
-function metaBackfill() { metaRun(META_BACKFILL_DAYS); }
+/* Everything from META_START_DATE to today; the clamp in metaDateRange does the
+ * limiting, so the number here only has to be large enough. */
+function metaBackfill() { metaRun(3650); }
 
 function metaRun(days) {
   var token = PropertiesService.getScriptProperties().getProperty('META_TOKEN');
@@ -56,6 +71,7 @@ function metaRun(days) {
 
   var range = metaDateRange(days);
   Logger.log('Pulling ' + range.since + ' → ' + range.until);
+  var meetingTypes = metaMeetingActionTypes(token);
 
   var daily = metaFetchInsights(token, range, 'adset', function (r) {
     return [
@@ -67,6 +83,7 @@ function metaRun(days) {
       metaLinkClicks(r),
       metaMoney(r.spend),
       metaLeads(r),
+      metaMeetings(r, meetingTypes),
     ];
   });
   metaWriteMerged(META_DAILY_TAB, META_DAILY_HEADER, daily, 3, range);
@@ -82,6 +99,7 @@ function metaRun(days) {
       metaLinkClicks(r),
       metaMoney(r.spend),
       metaLeads(r),
+      metaMeetings(r, meetingTypes),
     ];
   });
   metaWriteMerged(META_AD_TAB, META_AD_HEADER, ads, 2, range);
@@ -130,6 +148,52 @@ function metaFetchInsights(token, range, level, mapRow) {
   return rows;
 }
 
+/* Resolve the custom conversion's action_type once per run.
+ *
+ * A custom event named "meeting_confirmed" never appears under that name in
+ * insights — it arrives as `offsite_conversion.custom.<id>`. Map name -> id
+ * here so the column keeps working if the conversion is rebuilt with a new id.
+ * Returns an empty list rather than throwing: a missing custom conversion must
+ * not take down the spend and lead figures, which are the ones in daily use. */
+function metaMeetingActionTypes(token) {
+  try {
+    var url = 'https://graph.facebook.com/' + META_API_VERSION + '/' + META_AD_ACCOUNT
+      + '/customconversions?fields=id,name&limit=200&access_token=' + encodeURIComponent(token);
+    var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) {
+      Logger.log('custom conversions unavailable (HTTP ' + res.getResponseCode()
+        + ') — meetings will read 0');
+      return [];
+    }
+    var wanted = String(META_MEETING_EVENT).toLowerCase();
+    var out = [];
+    (JSON.parse(res.getContentText()).data || []).forEach(function (c) {
+      if (String(c.name || '').toLowerCase().indexOf(wanted) >= 0) {
+        out.push('offsite_conversion.custom.' + c.id);
+      }
+    });
+    Logger.log('meeting conversions matched: ' + (out.length ? out.join(', ') : 'none named "'
+      + META_MEETING_EVENT + '"'));
+    return out;
+  } catch (e) {
+    Logger.log('custom conversion lookup failed: ' + e.message + ' — meetings will read 0');
+    return [];
+  }
+}
+
+function metaMeetings(r, actionTypes) {
+  var total = 0;
+  (r.actions || []).forEach(function (a) {
+    var t = String(a.action_type || '');
+    if (actionTypes.indexOf(t) >= 0) total += Number(a.value || 0);
+    // Also count it if Meta ever surfaces the event under a readable name.
+    else if (t.toLowerCase().indexOf(String(META_MEETING_EVENT).toLowerCase()) >= 0) {
+      total += Number(a.value || 0);
+    }
+  });
+  return total;
+}
+
 /* Meta reports conversions in a nested actions array rather than as columns. */
 function metaLeads(r) {
   var total = 0;
@@ -164,6 +228,11 @@ function metaWriteMerged(tabName, header, freshRows, keyCols, range) {
     for (var i = 0; i < existing.length; i++) {
       var d = metaAsDate(existing[i][0]);
       if (!d) continue;
+      /* Drop anything before the floor. Without this, rows written by an
+       * earlier run with a wider window survive forever — the refresh only
+       * replaces what it re-fetched, so March–May data would outlive the
+       * decision to keep only June onward. */
+      if (d < META_START_DATE) continue;
       if (d < range.since || d > range.until) {
         existing[i][0] = d;
         kept.push(existing[i]);
@@ -219,8 +288,10 @@ function metaDateRange(days) {
   var tz = Session.getScriptTimeZone() || 'UTC';
   var until = new Date();
   var since = new Date(until.getTime() - days * 24 * 60 * 60 * 1000);
+  var sinceStr = Utilities.formatDate(since, tz, 'yyyy-MM-dd');
+  if (sinceStr < META_START_DATE) sinceStr = META_START_DATE;
   return {
-    since: Utilities.formatDate(since, tz, 'yyyy-MM-dd'),
+    since: sinceStr,
     until: Utilities.formatDate(until, tz, 'yyyy-MM-dd'),
   };
 }
