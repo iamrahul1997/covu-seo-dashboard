@@ -1020,12 +1020,13 @@ function verdictChip(v) {
 
 /* One creative row. Thumbnail only — no link out; the picture is the point. */
 function creativeRow(r, goal) {
-  var thumb = ((D.ads.meta && D.ads.meta.thumbs) || {})[r.k];
+  var art = ((D.ads.meta && D.ads.meta.thumbs) || {})[r.k] || {};
   var close = closeCost(r, goal);
   return '<tr><td class="q" title="' + esc(r.k) + '"><div class="adcell">'
-    + (thumb
-      ? '<img class="thumb" src="' + esc(thumb) + '" alt="" loading="lazy" '
-        + 'onerror="this.style.display=\'none\'">'
+    + (art.t
+      ? '<img class="thumb" src="' + esc(art.t) + '" alt="Creative for ' + esc(r.k) + '" '
+        + 'loading="lazy" tabindex="0" data-full="' + esc(art.f || art.t) + '" '
+        + 'data-name="' + esc(r.k) + '" onerror="this.style.display=\'none\'">'
       : '<span class="thumb"></span>')
     + '<span>' + esc(r.k) + '</span></div></td>'
     + '<td style="text-align:left">' + (r.verdict ? verdictChip(r.verdict) : '') + '</td>'
@@ -1130,6 +1131,37 @@ function renderMetaAds(w) {
 
   E('p-mads').innerHTML = html;
 }
+
+/* Full creative on demand. The thumbnail is all the table needs; the whole ad
+ * is often a 1080px square, so it is only fetched when someone asks for it. */
+function openLightbox(src, name) {
+  var box = E('lightbox');
+  E('lbImg').src = src;
+  E('lbCap').textContent = name || '';
+  box.classList.add('on');
+  E('lbClose').focus();
+}
+
+function closeLightbox() {
+  E('lightbox').classList.remove('on');
+  E('lbImg').removeAttribute('src');   // stop a large image decoding behind the overlay
+}
+
+document.addEventListener('click', function (ev) {
+  var img = ev.target.closest && ev.target.closest('img.thumb[data-full]');
+  if (img) { openLightbox(img.dataset.full, img.dataset.name); return; }
+  if (ev.target.id === 'lightbox' || ev.target.id === 'lbClose') closeLightbox();
+});
+
+document.addEventListener('keydown', function (ev) {
+  if (ev.key === 'Escape') closeLightbox();
+  /* Thumbnails are focusable, so the keyboard gets the same affordance. */
+  if ((ev.key === 'Enter' || ev.key === ' ')
+    && document.activeElement && document.activeElement.matches('img.thumb[data-full]')) {
+    ev.preventDefault();
+    openLightbox(document.activeElement.dataset.full, document.activeElement.dataset.name);
+  }
+});
 
 /* ---------- KPI row ---------- */
 

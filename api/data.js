@@ -429,7 +429,8 @@ function thumbnailsByAd(rows) {
   for (const r of rows) {
     const name = String(r.ad || '').trim();
     const thumb = String(r.thumbnail || '').trim();
-    if (name && thumb) out[name] = thumb;
+    const full = String(r.image || '').trim();
+    if (name && (thumb || full)) out[name] = { t: thumb || full, f: full || thumb };
   }
   return out;
 }
