@@ -192,47 +192,72 @@ function metaCampaignObjectives(token) {
   return map;
 }
 
-/* Creative thumbnails, fetched once per run and joined to insights on ad_id.
+/* Creative thumbnails, joined to insights on ad_id.
  *
- * Insights never returns creative, so this is a second call. The URLs Meta
- * hands back are signed and time-limited, which is exactly why they are
- * re-fetched on every daily run rather than stored once — each run replaces
- * yesterday's URL with a fresh one. If thumbnails ever start showing blank in
- * the dashboard, that is the signature expiring faster than the refresh
- * interval, and the fix is to cache the image bytes rather than the URL.
+ * Done in TWO calls rather than one. The single-call version asked for
+ * `creative{thumbnail_url,image_url}` — nested field expansion, with literal
+ * braces in the URL — and came back with nothing on 2026-09-23: 0 thumbnails
+ * across 1,362 ad rows while ad_id was populated on every one. Expansion is the
+ * fragile part, so it is avoided: fetch each ad's creative id, then fetch the
+ * creatives separately and join.
  *
- * thumbnail_url is a small preview; image_url is the full asset. Preferring the
- * thumbnail keeps the sheet small and the dashboard fast — these render at
- * about 40px.
+ * Failures log the response body, not just the status code, because "HTTP 400"
+ * on its own was not enough to tell what had gone wrong.
  */
 function metaCreativeThumbnails(token) {
-  var map = {};
+  var adToCreative = metaFetchPaged(token, '/ads', 'id,creative', function (acc, ad) {
+    if (ad.creative && ad.creative.id) acc[String(ad.id)] = String(ad.creative.id);
+    return acc;
+  }, {});
+  var creativeCount = Object.keys(adToCreative).length;
+  if (!creativeCount) {
+    Logger.log('creative lookup: no ads returned — the ad table will render without images');
+    return {};
+  }
+
+  var creativeToThumb = metaFetchPaged(token, '/adcreatives', 'id,thumbnail_url,image_url',
+    function (acc, c) {
+      var t = c.thumbnail_url || c.image_url || '';
+      if (t) acc[String(c.id)] = t;
+      return acc;
+    }, {});
+
+  var out = {};
+  Object.keys(adToCreative).forEach(function (adId) {
+    var thumb = creativeToThumb[adToCreative[adId]];
+    if (thumb) out[adId] = thumb;
+  });
+  Logger.log('creative thumbnails: ' + Object.keys(out).length + ' of ' + creativeCount + ' ads');
+  return out;
+}
+
+/* Paged GET against the ad account, folding each page into an accumulator.
+ * Returns whatever it managed to collect — a thumbnail failure must never take
+ * down spend and leads, which are the figures in daily use. */
+function metaFetchPaged(token, edge, fields, fold, acc) {
   try {
-    var url = 'https://graph.facebook.com/' + META_API_VERSION + '/' + META_AD_ACCOUNT
-      + '/ads?fields=id,name,creative{thumbnail_url,image_url}'
-      + '&limit=200&access_token=' + encodeURIComponent(token);
+    var url = 'https://graph.facebook.com/' + META_API_VERSION + '/' + META_AD_ACCOUNT + edge
+      + '?fields=' + encodeURIComponent(fields)
+      + '&limit=100&access_token=' + encodeURIComponent(token);
     var pages = 0;
-    while (url && pages < 20) {
+    while (url && pages < 30) {
       var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      var body = res.getContentText();
       if (res.getResponseCode() !== 200) {
-        Logger.log('creative thumbnails unavailable (HTTP ' + res.getResponseCode()
-          + ') — the ad table will render without images');
-        return map;
+        var msg = body;
+        try { msg = JSON.parse(body).error.message; } catch (e) { /* keep raw */ }
+        Logger.log(edge + ' failed (HTTP ' + res.getResponseCode() + '): ' + msg);
+        return acc;
       }
-      var json = JSON.parse(res.getContentText());
-      (json.data || []).forEach(function (ad) {
-        var c = ad.creative || {};
-        var thumb = c.thumbnail_url || c.image_url || '';
-        if (thumb) map[String(ad.id)] = thumb;
-      });
+      var json = JSON.parse(body);
+      (json.data || []).forEach(function (row) { acc = fold(acc, row); });
       url = json.paging && json.paging.next ? json.paging.next : null;
       pages++;
     }
-    Logger.log('creative thumbnails: ' + Object.keys(map).length + ' ads');
   } catch (e) {
-    Logger.log('creative thumbnail lookup failed: ' + e.message);
+    Logger.log(edge + ' threw: ' + e.message);
   }
-  return map;
+  return acc;
 }
 
 /* Resolve the custom conversion's action_type once per run.
