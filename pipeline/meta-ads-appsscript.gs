@@ -17,80 +17,87 @@
  *      Generate. Copy it. It does not expire; treat it like a password.
  *   5. In this Apps Script project: Project Settings → Script properties →
  *      add META_TOKEN with that value. Never paste it into the code.
- *   6. Run backfill() once, then Triggers → add a daily trigger on main().
+ *   6. Run metaBackfill() once, then Triggers → add a daily trigger on metaMain().
  *
- * Idempotent: refreshes the trailing LOOKBACK_DAYS and preserves older history,
- * so a daily run corrects late-attributed leads without duplicating anything.
+ * Idempotent: refreshes the trailing 90 days and preserves older history, so a
+ * daily run corrects late-attributed leads without duplicating anything.
+ *
+ * EVERY top-level name here is prefixed `meta`/`META_`. That is not style.
+ * Apps Script shares ONE global namespace across all files in a project, and
+ * this one already contains the nightly Search Console + GA4 pipeline in
+ * Code.gs. An unprefixed `main`, `writeMerged` or `SPREADSHEET_ID` would
+ * silently override that pipeline's own — no error, just the wrong function
+ * running on its 01:13 trigger. Keep the prefixes when editing.
  */
 
-var SPREADSHEET_ID = '1IuI7NqgsrourIz1BeH44zx_Wp5_xSaGffkxYS1eYXXc';
-var AD_ACCOUNT = 'act_4460021897602415';   // COVU Ads
+var META_SPREADSHEET_ID = '1IuI7NqgsrourIz1BeH44zx_Wp5_xSaGffkxYS1eYXXc';
+var META_AD_ACCOUNT = 'act_4460021897602415';   // COVU Ads
 /* Graph API version. Meta retires a version roughly two years after release,
- * and this one was pinned in August 2026 — if a run fails with a deprecation
+ * and this one was pinned in August 2026 — if a metaRun fails with a deprecation
  * or "unsupported version" error, raise this to the current version shown at
  * developers.facebook.com/docs/graph-api/changelog. Nothing else needs to
  * change; the fields used here are stable across versions. */
-var API_VERSION = 'v21.0';
-var LOOKBACK_DAYS = 90;
-var BACKFILL_DAYS = 365;
+var META_API_VERSION = 'v21.0';
+var META_LOOKBACK_DAYS = 90;
+var META_BACKFILL_DAYS = 365;
 
-var DAILY_TAB = 'ads_meta_daily';
-var AD_TAB = 'ads_meta_ad';
+var META_DAILY_TAB = 'ads_meta_daily';
+var META_AD_TAB = 'ads_meta_ad';
 
-var DAILY_HEADER = ['date', 'campaign', 'adset', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads'];
-var AD_HEADER = ['date', 'ad', 'adset', 'campaign', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads'];
+var META_DAILY_HEADER = ['date', 'campaign', 'adset', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads'];
+var META_AD_HEADER = ['date', 'ad', 'adset', 'campaign', 'impressions', 'clicks', 'link_clicks', 'spend', 'leads'];
 
-function main() { run(LOOKBACK_DAYS); }
-function backfill() { run(BACKFILL_DAYS); }
+function metaMain() { metaRun(META_LOOKBACK_DAYS); }
+function metaBackfill() { metaRun(META_BACKFILL_DAYS); }
 
-function run(days) {
+function metaRun(days) {
   var token = PropertiesService.getScriptProperties().getProperty('META_TOKEN');
   if (!token) throw new Error('META_TOKEN script property is not set — see setup notes at the top.');
 
-  var range = dateRange(days);
+  var range = metaDateRange(days);
   Logger.log('Pulling ' + range.since + ' → ' + range.until);
 
-  var daily = fetchInsights(token, range, 'adset', function (r) {
+  var daily = metaFetchInsights(token, range, 'adset', function (r) {
     return [
       r.date_start,
       r.campaign_name || '',
       r.adset_name || '',
-      int(r.impressions),
-      int(r.clicks),
-      linkClicks(r),
-      money(r.spend),
-      leads(r),
+      metaInt(r.impressions),
+      metaInt(r.clicks),
+      metaLinkClicks(r),
+      metaMoney(r.spend),
+      metaLeads(r),
     ];
   });
-  writeMerged(DAILY_TAB, DAILY_HEADER, daily, 3, range);
+  metaWriteMerged(META_DAILY_TAB, META_DAILY_HEADER, daily, 3, range);
 
-  var ads = fetchInsights(token, range, 'ad', function (r) {
+  var ads = metaFetchInsights(token, range, 'ad', function (r) {
     return [
       r.date_start,
       r.ad_name || '',
       r.adset_name || '',
       r.campaign_name || '',
-      int(r.impressions),
-      int(r.clicks),
-      linkClicks(r),
-      money(r.spend),
-      leads(r),
+      metaInt(r.impressions),
+      metaInt(r.clicks),
+      metaLinkClicks(r),
+      metaMoney(r.spend),
+      metaLeads(r),
     ];
   });
-  writeMerged(AD_TAB, AD_HEADER, ads, 2, range);
+  metaWriteMerged(META_AD_TAB, META_AD_HEADER, ads, 2, range);
 
-  stampMeta();
+  metaStampRun();
 }
 
 /* ---------- Graph API ---------- */
 
-function fetchInsights(token, range, level, mapRow) {
+function metaFetchInsights(token, range, level, mapRow) {
   var fields = [
     'date_start', 'campaign_name', 'adset_name', 'impressions', 'clicks', 'spend', 'actions',
   ];
   if (level === 'ad') fields.push('ad_name');
 
-  var url = 'https://graph.facebook.com/' + API_VERSION + '/' + AD_ACCOUNT + '/insights'
+  var url = 'https://graph.facebook.com/' + META_API_VERSION + '/' + META_AD_ACCOUNT + '/insights'
     + '?level=' + level
     + '&time_increment=1'
     + '&limit=500'
@@ -124,7 +131,7 @@ function fetchInsights(token, range, level, mapRow) {
 }
 
 /* Meta reports conversions in a nested actions array rather than as columns. */
-function leads(r) {
+function metaLeads(r) {
   var total = 0;
   (r.actions || []).forEach(function (a) {
     var t = String(a.action_type || '');
@@ -136,7 +143,7 @@ function leads(r) {
   return total;
 }
 
-function linkClicks(r) {
+function metaLinkClicks(r) {
   var total = 0;
   (r.actions || []).forEach(function (a) {
     if (String(a.action_type) === 'link_click') total += Number(a.value || 0);
@@ -146,8 +153,8 @@ function linkClicks(r) {
 
 /* ---------- sheet writing ---------- */
 
-function writeMerged(tabName, header, freshRows, keyCols, range) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+function metaWriteMerged(tabName, header, freshRows, keyCols, range) {
+  var ss = SpreadsheetApp.openById(META_SPREADSHEET_ID);
   var sheet = ss.getSheetByName(tabName) || ss.insertSheet(tabName);
 
   var kept = [];
@@ -155,7 +162,7 @@ function writeMerged(tabName, header, freshRows, keyCols, range) {
   if (lastRow > 1) {
     var existing = sheet.getRange(2, 1, lastRow - 1, header.length).getValues();
     for (var i = 0; i < existing.length; i++) {
-      var d = asDate(existing[i][0]);
+      var d = metaAsDate(existing[i][0]);
       if (!d) continue;
       if (d < range.since || d > range.until) {
         existing[i][0] = d;
@@ -191,8 +198,8 @@ function writeMerged(tabName, header, freshRows, keyCols, range) {
   Logger.log(tabName + ': kept ' + kept.length + ' older rows, wrote ' + all.length + ' total');
 }
 
-function stampMeta() {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+function metaStampRun() {
+  var ss = SpreadsheetApp.openById(META_SPREADSHEET_ID);
   var sheet = ss.getSheetByName('meta');
   if (!sheet) return;
   var last = sheet.getLastRow();
@@ -208,7 +215,7 @@ function stampMeta() {
 
 /* ---------- helpers ---------- */
 
-function dateRange(days) {
+function metaDateRange(days) {
   var tz = Session.getScriptTimeZone() || 'UTC';
   var until = new Date();
   var since = new Date(until.getTime() - days * 24 * 60 * 60 * 1000);
@@ -218,11 +225,11 @@ function dateRange(days) {
   };
 }
 
-function asDate(v) {
+function metaAsDate(v) {
   if (v instanceof Date) return Utilities.formatDate(v, 'UTC', 'yyyy-MM-dd');
   var s = String(v || '').trim();
   return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : '';
 }
 
-function int(v) { return Math.round(Number(v || 0)); }
-function money(v) { return Math.round(Number(v || 0) * 100) / 100; }
+function metaInt(v) { return Math.round(Number(v || 0)); }
+function metaMoney(v) { return Math.round(Number(v || 0) * 100) / 100; }
