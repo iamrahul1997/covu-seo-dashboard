@@ -972,14 +972,16 @@ function closeCost(r, goal) {
   return r.i > 0 ? r.cents / (r.i / 1000) : null;   // reach -> CPM
 }
 
-/* Creative scorecard, scored INSIDE one campaign.
+/* Per-campaign benchmarks for the creative table.
  *
- * Hook is always link CTR — did the ad earn the click. Close depends on the
- * campaign's objective. Medians are per campaign too: one median across five
- * campaigns with different economics made every verdict meaningless.
+ * Returns the medians each ad in the campaign is read against: hook is link CTR
+ * — did the ad earn the click — and close follows the campaign's objective.
+ * Medians are per campaign because one median across five campaigns with
+ * different economics is not a benchmark for any of them.
  *
- * Verdicts are withheld below four funded creatives — a median over two or
- * three is a coin toss, not a benchmark. */
+ * Withheld below four funded creatives: an average over two or three is a coin
+ * toss. Named a scorecard from when it also printed a call per ad; it now
+ * supplies the line and leaves the judgement to the reader. */
 function creativeScorecard(rows, goal) {
   var SPEND_FLOOR = 0.3;
   var medSpend = median(rows.map(function (r) { return r.cents; }));
@@ -997,44 +999,37 @@ function creativeScorecard(rows, goal) {
   });
   var medClose = median(closes);
 
-  rows.forEach(function (r) {
-    if (r.cents < medSpend * SPEND_FLOOR) { r.verdict = 'THIN'; return; }
-    var hook = r.i ? r.lc / r.i * 100 : 0;
-    var close = closeCost(r, goal);
-    var hookOk = hook >= medHook;
-    var closeOk = close !== null && medClose > 0 && close <= medClose;
-    if (hookOk && closeOk) r.verdict = 'SCALE';
-    else if (!hookOk && closeOk) r.verdict = 'GRADUATE';
-    else if (hookOk && !closeOk) r.verdict = 'WATCH';
-    else r.verdict = 'KILL';
-  });
-
   return { rows: rows, graded: true, goal: goal, medHook: medHook, medClose: medClose, n: qualifying.length };
-}
-
-function verdictChip(v) {
-  var cls = v === 'SCALE' ? 'up' : v === 'GRADUATE' ? 'br' : v === 'WATCH' ? 'nb'
-    : v === 'KILL' ? 'dn' : 'fl';
-  return '<span class="chip ' + cls + '" style="font-size:10px;padding:2px 7px">' + v + '</span>';
 }
 
 /* One creative row. Thumbnail only — no link out; the picture is the point. */
 function creativeRow(r, goal) {
   var art = ((D.ads.meta && D.ads.meta.thumbs) || {})[r.k] || {};
+  var name = adKeyParts(r.k).ad;
   var close = closeCost(r, goal);
-  return '<tr><td class="q" title="' + esc(r.k) + '"><div class="adcell">'
+  return '<tr><td class="q" title="' + esc(name) + '"><div class="adcell">'
     + (art.t
-      ? '<img class="thumb" src="' + esc(art.t) + '" alt="Creative for ' + esc(r.k) + '" '
+      ? '<img class="thumb" src="' + esc(art.t) + '" alt="Creative for ' + esc(name) + '" '
         + 'loading="lazy" tabindex="0" data-full="' + esc(art.f || art.t) + '" '
-        + 'data-name="' + esc(r.k) + '" onerror="this.style.display=\'none\'">'
+        + 'data-name="' + esc(name) + '" onerror="this.style.display=\'none\'">'
       : '<span class="thumb"></span>')
-    + '<span>' + esc(r.k) + '</span></div></td>'
-    + '<td style="text-align:left">' + (r.verdict ? verdictChip(r.verdict) : '') + '</td>'
+    + '<span>' + esc(name) + '</span></div></td>'
     + '<td>' + money(r.cents) + '</td>'
     + '<td>' + (r.i ? (r.lc / r.i * 100).toFixed(2) : '0.00') + '%</td>'
     + '<td>' + F(r.lc) + '</td>'
     + '<td>' + F1(r.conv / 100) + '</td>'
     + '<td class="p">' + (close === null ? '—' : money(close)) + '</td></tr>';
+}
+
+/* Creatives and ad sets are both keyed campaign-then-name: the same creative
+ * runs in up to three campaigns, and the "Bex" ad set in two, so keying on the
+ * name alone merged their spend and filed the total under one of them. */
+function adKeyParts(key) {
+  var sep = (D.ads.meta && D.ads.meta.adKeySep) || '\u241f';
+  var i = String(key).indexOf(sep);
+  return i < 0
+    ? { campaign: '', ad: String(key) }
+    : { campaign: key.slice(0, i), ad: key.slice(i + sep.length) };
 }
 
 function renderMetaAds(w) {
@@ -1057,8 +1052,7 @@ function renderMetaAds(w) {
   var adsets = adsByKey(m.adsets, w.a, w.b);
   var creatives = adsByKey(m.creatives, w.a, w.b);
   var objectives = m.objectives || {};
-  var adCampaign = m.adCampaign || {};
-  var adsetCampaign = m.adsetCampaign || {};
+
 
   var stale = '';
   if (m.lastRun) {
@@ -1081,8 +1075,15 @@ function renderMetaAds(w) {
     + chart(adsSeries(m.campaigns, w.a, w.b), labels, flags, '#0b5ed9') + '</div>';
 
   campaigns.forEach(function (camp) {
-    var mine = creatives.filter(function (r) { return adCampaign[r.k] === camp.k; });
-    var mySets = adsets.filter(function (r) { return adsetCampaign[r.k] === camp.k; });
+    var mine = creatives.filter(function (r) { return adKeyParts(r.k).campaign === camp.k; });
+    /* Ad sets carry the same composite key as creatives — "Bex" runs in two
+     * campaigns — so they are filtered and relabelled the same way. */
+    var mySets = adsets.filter(function (r) { return adKeyParts(r.k).campaign === camp.k; })
+      .map(function (r) {
+        var copy = {}; for (var f in r) copy[f] = r[f];
+        copy.k = adKeyParts(r.k).ad;
+        return copy;
+      });
     var goal = campaignGoal(objectives[camp.k], camp);
     var lbl = GOAL_LABEL[goal];
     var score = creativeScorecard(mine, goal);
@@ -1112,19 +1113,19 @@ function renderMetaAds(w) {
       + '<div class="sub" style="margin-top:16px;padding-left:0"><b>Creatives</b> · hook = link CTR'
       + ' · close = ' + lbl.unit + '</div>'
       + (mine.length
-        ? '<div class="tw"><table><thead><tr><th>Ad</th><th>Call</th><th>Spend</th>'
+        ? '<div class="tw"><table><thead><tr><th>Ad</th><th>Spend</th>'
           + '<th>Link CTR</th><th>Link clicks</th><th>Leads</th><th>' + lbl.close + '</th>'
           + '</tr></thead><tbody>'
           + score.rows.map(function (r) { return creativeRow(r, goal); }).join('')
           + '</tbody></table></div>'
           + (score.graded
-            ? '<div class="note">Median hook <b>' + score.medHook.toFixed(2) + '%</b>, median '
+            ? '<div class="note">Median hook <b>' + score.medHook.toFixed(2) + '%</b> and median '
               + lbl.unit + ' <b>' + money(score.medClose) + '</b>, across ' + score.n
-              + ' funded creatives <b>in this campaign</b>. Verdicts are relative to this campaign '
-              + 'only — a SCALE here is not comparable to a SCALE elsewhere.</div>'
-            : '<div class="note">No verdicts: only ' + score.n + ' creative'
-              + (score.n === 1 ? '' : 's') + ' with meaningful spend. A median over two or three '
-              + 'is a coin toss rather than a benchmark.</div>')
+              + ' funded creatives <b>in this campaign</b> — the line each ad above is above or '
+              + 'below. Benchmarks are per campaign, so they are not comparable between them.</div>'
+            : '<div class="note">Only ' + score.n + ' creative'
+              + (score.n === 1 ? '' : 's') + ' here has meaningful spend, so no median is shown — '
+              + 'an average over two or three is a coin toss rather than a benchmark.</div>')
         : '<div class="note">No ad-level spend in this range</div>')
       + '</div>';
   });

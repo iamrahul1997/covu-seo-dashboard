@@ -420,6 +420,23 @@ function objectivesByCampaign(rows) {
   return out;
 }
 
+/* Creatives are keyed by campaign AND ad name, never ad name alone.
+ *
+ * 13 of 66 ad names run in more than one campaign — bex-service-hours runs in
+ * GUIDE, Prospecting and TOF — so keying on the name alone summed one
+ * creative's spend across every campaign it appeared in and then filed the total
+ * under whichever campaign happened to be written last. */
+const AD_KEY_SEP = '\u241f';
+function adKey(r) {
+  return String(r.campaign || '').trim() + AD_KEY_SEP + String(r.ad || '').trim();
+}
+
+/* Ad sets need the same treatment, for the same reason: "Bex" runs in both
+ * GUIDE CAMPAIGN and Prospecting. */
+function adsetKey(r) {
+  return String(r.campaign || '').trim() + AD_KEY_SEP + String(r.adset || '').trim();
+}
+
 /* One creative thumbnail per ad. The sheet repeats it on every daily row, so
  * this collapses to a single URL keyed by the same ad name rollUpAds uses.
  * Latest row wins — the URLs are signed and refreshed each run, so the most
@@ -427,7 +444,7 @@ function objectivesByCampaign(rows) {
 function thumbnailsByAd(rows) {
   const out = {};
   for (const r of rows) {
-    const name = String(r.ad || '').trim();
+    const name = adKey(r);
     const thumb = String(r.thumbnail || '').trim();
     const full = String(r.image || '').trim();
     if (name && (thumb || full)) out[name] = { t: thumb || full, f: full || thumb };
@@ -491,6 +508,10 @@ async function build() {
   const bq = rollUp(t.blog_queries, 'query', blogIdx);
   const bp = rollUp(t.blog_pages, 'page', blogIdx);
 
+  /* Composite key computed once, so the rollup and the thumbnail map agree. */
+  const metaAdRows = (t.ads_meta_ad || []).map((r) => ({ ...r, campaign_ad: adKey(r) }));
+  const metaDailyRows = (t.ads_meta_daily || []).map((r) => ({ ...r, campaign_adset: adsetKey(r) }));
+
   const maxDay = (rows) => rows.reduce((m, r) => { const d = day(r.date); return d > m ? d : m; }, '');
   const dataThrough = maxDay(t.daily_totals);
   const queriesThrough = maxDay(t.queries);
@@ -541,30 +562,11 @@ async function build() {
        * /export with an empty gid silently returns the FIRST sheet. */
       meta: {
         campaigns: rollUpAds(t.ads_meta_daily || [], wIdx, 'campaign'),
-        adsets: rollUpAds(t.ads_meta_daily || [], wIdx, 'adset'),
-        creatives: rollUpAds(t.ads_meta_ad || [], wIdx, 'ad'),
-        thumbs: thumbnailsByAd(t.ads_meta_ad || []),
+        adsets: rollUpAds(metaDailyRows, wIdx, 'campaign_adset'),
+        creatives: rollUpAds(metaAdRows, wIdx, 'campaign_ad'),
+        thumbs: thumbnailsByAd(metaAdRows),
+        adKeySep: AD_KEY_SEP,
         objectives: objectivesByCampaign(t.ads_meta_daily || []),
-        /* ad -> campaign, so the tab can group creatives without a second
-         * rollUp keyed on a pair. */
-        adCampaign: (t.ads_meta_ad || []).reduce((m, r) => {
-          const ad = String(r.ad || '').trim();
-          const camp = String(r.campaign || '').trim();
-          if (ad && camp) m[ad] = camp;
-          return m;
-        }, {}),
-        adAdset: (t.ads_meta_ad || []).reduce((m, r) => {
-          const ad = String(r.ad || '').trim();
-          const set = String(r.adset || '').trim();
-          if (ad && set) m[ad] = set;
-          return m;
-        }, {}),
-        adsetCampaign: (t.ads_meta_daily || []).reduce((m, r) => {
-          const set = String(r.adset || '').trim();
-          const camp = String(r.campaign || '').trim();
-          if (set && camp) m[set] = camp;
-          return m;
-        }, {}),
         lastRun: metaKV.ads_meta_last_run || null,
         through: maxDay(t.ads_meta_daily || []) || null,
       },
