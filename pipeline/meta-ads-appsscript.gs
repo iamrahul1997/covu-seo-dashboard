@@ -140,10 +140,15 @@ function metaFetchInsights(token, range, level, mapRow) {
     var body = res.getContentText();
 
     if (code !== 200) {
-      // Surface Meta's own message; guessing at these wastes time.
-      var msg = body;
-      try { msg = JSON.parse(body).error.message; } catch (e) { /* keep raw */ }
-      throw new Error('Meta API HTTP ' + code + ' at level=' + level + ': ' + msg);
+      /* Surface the whole error, not just the message.
+       *
+       * The failures on 26-27 Sep read only "API access blocked", which is not
+       * enough to act on — Meta uses it for a restricted app, a restricted ad
+       * account and a pending business verification alike. `code` and
+       * `error_subcode` are what separate those, and error_user_title /
+       * error_user_msg carry the human-readable remedy when Meta has one. */
+      throw new Error('Meta API HTTP ' + code + ' at level=' + level + ': '
+        + metaDescribeError(body));
     }
 
     var json = JSON.parse(body);
@@ -153,6 +158,24 @@ function metaFetchInsights(token, range, level, mapRow) {
   }
   Logger.log('level=' + level + ': ' + rows.length + ' rows over ' + pages + ' page(s)');
   return rows;
+}
+
+/* Flatten a Graph API error into one readable line. */
+function metaDescribeError(body) {
+  try {
+    var e = JSON.parse(body).error || {};
+    var bits = [];
+    if (e.message) bits.push(e.message);
+    if (e.code !== undefined) bits.push('code ' + e.code
+      + (e.error_subcode ? '/' + e.error_subcode : ''));
+    if (e.type) bits.push(e.type);
+    if (e.error_user_title) bits.push(e.error_user_title);
+    if (e.error_user_msg) bits.push(e.error_user_msg);
+    if (e.fbtrace_id) bits.push('trace ' + e.fbtrace_id);
+    return bits.length ? bits.join(' · ') : body.slice(0, 300);
+  } catch (err) {
+    return String(body).slice(0, 300);
+  }
 }
 
 /* What each campaign was actually bought to do.
@@ -251,9 +274,8 @@ function metaFetchPaged(token, edge, fields, fold, acc) {
       var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
       var body = res.getContentText();
       if (res.getResponseCode() !== 200) {
-        var msg = body;
-        try { msg = JSON.parse(body).error.message; } catch (e) { /* keep raw */ }
-        Logger.log(edge + ' failed (HTTP ' + res.getResponseCode() + '): ' + msg);
+        Logger.log(edge + ' failed (HTTP ' + res.getResponseCode() + '): '
+          + metaDescribeError(body));
         return acc;
       }
       var json = JSON.parse(body);
