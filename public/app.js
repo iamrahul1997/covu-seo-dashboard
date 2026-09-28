@@ -873,15 +873,7 @@ function renderGoogleAds(w, queries) {
       + 'it is not. The data cannot settle which; it can only price the question.</div></div>';
   }
 
-  var stale = '';
-  if (g.lastRun) {
-    var ageDays = Math.floor((Date.now() - new Date(g.lastRun).getTime()) / 86400000);
-    if (ageDays >= 2) {
-      stale = '<div class="warn"><span class="ic">⚠</span><span>The ads pipeline last ran <b>'
-        + ageDays + ' days ago</b> (' + esc(String(g.lastRun).slice(0, 10)) + '). Check the daily '
-        + 'schedule on the Google Ads script — these numbers are going stale.</span></div>';
-    }
-  }
+  var stale = adsStaleness(g, 'Google Ads', 1);
 
   E('p-gads').innerHTML = stale
     + '<div class="card g"><h2>Weekly spend</h2>'
@@ -1021,6 +1013,32 @@ function creativeRow(r, goal) {
     + '<td class="p">' + (close === null ? '—' : money(close)) + '</td></tr>';
 }
 
+/* Is this ads source stale, and can we even tell?
+ *
+ * Judged on the newest DATA date, not on the run stamp. The stamp lives in the
+ * sheet's `meta` tab, which the nightly GSC pipeline rewrites wholesale at
+ * 01:14 — so a stamp only survives if its script ran afterwards and succeeded.
+ * When the Meta fetcher started failing on 26 Sep its stamp simply vanished,
+ * and the old check (`if (lastRun)`) produced no warning at all: it went quiet
+ * precisely when it was needed. The data date cannot disappear that way.
+ *
+ * `lag` is how far behind "now" this source is expected to run: Meta and Google
+ * Ads report same-day or next-day, unlike Search Console's three. */
+function adsStaleness(source, label, lag) {
+  if (!source || !source.through) return '';
+  var newest = new Date(source.through + 'T00:00:00Z').getTime();
+  var days = Math.floor((Date.now() - newest) / 86400000);
+  if (days <= lag + 1) return '';
+  return '<div class="warn"><span class="ic">⚠</span><span>'
+    + label + ' data stops at <b>' + fmtDate(source.through) + '</b>, <b>' + days
+    + ' days ago</b>. '
+    + (source.lastRun
+      ? 'The fetcher last ran ' + esc(String(source.lastRun).slice(0, 10)) + '. '
+      : 'No successful run is recorded — the job is erroring rather than merely late. ')
+    + 'Check the Apps Script execution log; everything below is history, not current.'
+    + '</span></div>';
+}
+
 /* Creatives and ad sets are both keyed campaign-then-name: the same creative
  * runs in up to three campaigns, and the "Bex" ad set in two, so keying on the
  * name alone merged their spend and filed the total under one of them. */
@@ -1054,15 +1072,7 @@ function renderMetaAds(w) {
   var objectives = m.objectives || {};
 
 
-  var stale = '';
-  if (m.lastRun) {
-    var ageDays = Math.floor((Date.now() - new Date(m.lastRun).getTime()) / 86400000);
-    if (ageDays >= 2) {
-      stale = '<div class="warn"><span class="ic">⚠</span><span>The Meta fetcher last ran <b>'
-        + ageDays + ' days ago</b> (' + esc(String(m.lastRun).slice(0, 10)) + '). Check the daily '
-        + 'trigger in Apps Script — these numbers are going stale.</span></div>';
-    }
-  }
+  var stale = adsStaleness(m, 'Meta', 1);
 
   /* Account-level spend first, then one self-contained block per campaign.
    * Three flat tables threw away the hierarchy that actually matters when
