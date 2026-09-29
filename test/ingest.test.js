@@ -23,8 +23,8 @@ before(async () => {
   await migrate({ quiet: true });
   orgId = (await query(`insert into org (slug, name) values ('acme', 'Acme') returning id`)).rows[0].id;
   sourceId = (await query(
-    `insert into source (org_id, kind, external_id, label, lag_days)
-     values ($1, 'gsc', 'sc-domain:acme.test', 'acme.test', 3) returning id`,
+    `insert into source (org_id, kind, transport, external_id, label, lag_days)
+     values ($1, 'gsc', 'sheet', 'sc-domain:acme.test', 'acme.test', 3) returning id`,
     [orgId],
   )).rows[0].id;
 });
@@ -137,8 +137,8 @@ test('freshness is measured from the facts, not declared', async () => {
 test('interior gaps exclude the first and last weeks', async () => {
   // Three weeks, with the middle one short. Only the middle may be reported.
   const s2 = (await query(
-    `insert into source (org_id, kind, external_id, label)
-     values ($1, 'gsc', 'sc-domain:gap.test', 'gap.test') returning id`, [orgId],
+    `insert into source (org_id, kind, transport, external_id, label)
+     values ($1, 'gsc', 'sheet', 'sc-domain:gap.test', 'gap.test') returning id`, [orgId],
   )).rows[0].id;
   const mk = (d) => ({ day: d, dim: 'total', clicks: 1, impressions: 1, position_sum: 1 });
   await writeFacts(s2, [
@@ -167,8 +167,8 @@ test('ingest health is queryable per source', async () => {
  * point actually covers a trailing 90-day window. */
 test('snapshot dimensions are replaced on each run, not appended', async () => {
   const s3 = (await query(
-    `insert into source (org_id, kind, external_id, label)
-     values ($1, 'ga4', 'snap.test', 'snap.test') returning id`, [orgId],
+    `insert into source (org_id, kind, transport, external_id, label)
+     values ($1, 'ga4', 'sheet', 'snap.test', 'snap.test') returning id`, [orgId],
   )).rows[0].id;
 
   const snapshot = (day) => [
@@ -195,8 +195,8 @@ test('snapshot dimensions are replaced on each run, not appended', async () => {
 
 test('replacing one dimension leaves the others untouched', async () => {
   const s4 = (await query(
-    `insert into source (org_id, kind, external_id, label)
-     values ($1, 'ga4', 'mixed.test', 'mixed.test') returning id`, [orgId],
+    `insert into source (org_id, kind, transport, external_id, label)
+     values ($1, 'ga4', 'sheet', 'mixed.test', 'mixed.test') returning id`, [orgId],
   )).rows[0].id;
 
   // A dated series alongside a snapshot: the daily rows must accumulate as
@@ -226,8 +226,8 @@ test('replacing one dimension leaves the others untouched', async () => {
 test('health reports a source that has never ingested as unknown', async () => {
   const { health } = await import('../lib/health.js');
   const s5 = (await query(
-    `insert into source (org_id, kind, external_id, label)
-     values ($1, 'hubspot', 'never.test', 'never.test') returning id`, [orgId],
+    `insert into source (org_id, kind, transport, external_id, label)
+     values ($1, 'hubspot', 'sheet', 'never.test', 'never.test') returning id`, [orgId],
   )).rows[0].id;
 
   const h = await health('acme');
