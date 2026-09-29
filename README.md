@@ -6,6 +6,23 @@ personal "Covu" scope — *not* the `covu-team` scope).
 Reads the **GSC Data** Google Sheet, which a nightly pipeline fills from Google
 Search Console and GA4, and renders search, blog and answer-engine performance.
 
+## The documentation
+
+| File | What it covers |
+|---|---|
+| **README.md** (this file) | The shipping dashboard: how it runs, its sources, auth, caching. |
+| **PLATFORM.md** | The multi-tenant Postgres platform — schema, tenancy, credentials, and an honest status of what is and is not wired up. |
+| **docs/APPROVALS.md** | Reaching *other companies'* ad accounts: the Google Ads developer token and Meta App Review. The critical path, and the slowest part of the project. |
+| **pipeline/README.md** | The Google Ads Script and Meta Apps Script that fill the sheet, their schema, and how they fail. |
+| **HANDOFF.md** | Context for rebuilding this as a larger product in a fresh session. |
+
+Two branches, deliberately:
+
+- **`main`** — the live dashboard, sheet-backed. Auto-deploys to production on
+  merge, so it is never committed to directly.
+- **`platform-v2`** — the Postgres platform, multi-tenant, reconciled with
+  everything on `main`. Not yet serving traffic.
+
 ## Why this repo exists
 
 The original dashboard existed only as a deployed Vercel build — no repository,
@@ -111,6 +128,34 @@ Optional:
   against a registered value, and preview deployments get a fresh hostname every
   time, so set this to the production origin if you want sign-in to work from
   previews.
+
+### Platform environment (the `platform-v2` branch)
+
+The Postgres platform adds two more. Neither affects the sheet-backed
+dashboard, which still runs on nothing but the variables above.
+
+- `DATABASE_URL` — a hosted Postgres (Neon). Unset locally, where PGlite runs
+  the same SQL from `./.data/pg` with no server and no account. It must be set
+  in any deployed environment: a serverless filesystem is ephemeral, so a local
+  database file there would vanish between invocations.
+
+- `CREDENTIAL_KEY` — 32 bytes, base64, encrypting every third-party token at
+  rest. Generate one with:
+
+  ```bash
+  node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+  ```
+
+  **Handling.** Lose it and every stored token is unrecoverable and every
+  customer has to reconnect. Leak it alongside a database dump and you have
+  handed over every customer's ad accounts. The two together are the whole
+  secret and separately neither is worth anything, so they must not share a
+  home — not the same password manager entry, not the same backup. Rotating it
+  means re-sealing every row, which is what `connection.key_version` is for.
+
+  There is no default and no fallback. A missing key raises at the first
+  attempt to read or write a credential, rather than silently storing
+  plaintext.
 
 ### Google Cloud setup
 

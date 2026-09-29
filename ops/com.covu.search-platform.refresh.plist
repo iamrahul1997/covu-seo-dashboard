@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.covu.search-platform.refresh</string>
+
+  <!-- One command: migrate, load every source, verify the result. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>__REPO__/scripts/refresh.js</string>
+    <string>--quiet</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+
+  <!-- Daily at 06:30 local. The upstream pipeline stamps its run at 01:13 UTC,
+       so by any local morning its data is already in the sheet. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>6</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+
+  <!-- launchd runs a missed job once the machine wakes, so a closed laptop
+       delays the refresh rather than skipping it. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>__REPO__/ops/refresh.log</string>
+  <key>StandardErrorPath</key>
+  <string>__REPO__/ops/refresh.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

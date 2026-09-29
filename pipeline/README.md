@@ -9,6 +9,38 @@ data source, no ad-platform credentials anywhere near Vercel.
 | `google-ads-script.js` | Google Ads → Scripts | `ads_google_daily`, `ads_google_keyword` |
 | `meta-ads-appsscript.gs` | Apps Script (same project as the GSC pipeline) | `ads_meta_daily`, `ads_meta_ad` |
 
+> **Scope.** Everything here is single-tenant by construction: one spreadsheet,
+> one Meta token in Script Properties, one ad account constant, and a Google
+> Ads Script that only runs inside the account that owns it. Adding an account
+> means editing a script. That is the ceiling this design has, and it is why
+> the platform replaces it with API connectors and per-account credentials —
+> see `docs/APPROVALS.md` for what reaching another company's account requires,
+> and `PLATFORM.md` for where it lands.
+>
+> These scripts are not deprecated. Plenty of teams have a script filling a
+> sheet and no appetite for API credentials, so `transport = 'sheet'` stays a
+> permanent, supported category rather than a migration artefact.
+
+## When it breaks
+
+Both scripts fail loudly by email, and both failure modes seen so far were
+external rather than bugs:
+
+- **`API access blocked` (Meta, HTTP 400).** In September 2026 this followed an
+  ad account restriction: a card payment failed, delivery stopped dead mid-flight
+  on the 20th, and the Graph API began refusing reads a few days later. Nothing
+  in the pipeline was wrong and there was no missing data to recover — the
+  account had stopped spending before the API stopped answering. `metaDescribeError`
+  now surfaces Meta's `code`, `error_subcode`, `error_user_title` and
+  `fbtrace_id` so the next one is diagnosable from the failure email alone.
+
+- **Silence.** Worse than an error, because nothing arrives to tell you. The
+  nightly GSC pipeline rewrites the `meta` tab at 01:14 and the Meta fetcher
+  stamps it at 05:19, so a Meta run that dies never writes its stamp — and a
+  staleness check reading that stamp sees nothing and says nothing. The
+  dashboard now judges freshness from the newest data date instead, which
+  cannot be erased by a job that did not run.
+
 HubSpot was evaluated and dropped on 2026-09-23 — its Personal Access Keys are
 rejected by the CRM API and the private app needed scopes that were never added.
 The fetcher and the dashboard card are in git history if that changes.

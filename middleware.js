@@ -13,9 +13,21 @@
 import { verifySession, parseCookies, SESSION_COOKIE } from './lib/session.js';
 
 export const config = {
-  // Everything except Vercel's own internals and the auth endpoints themselves,
-  // which obviously cannot require a session to reach.
-  matcher: ['/((?!_vercel/|api/auth/).*)'],
+  // Everything except Vercel's own internals, the auth endpoints themselves
+  // (which obviously cannot require a session to reach), and the scheduled
+  // ingest.
+  //
+  // api/cron/ is exempt because Vercel Cron presents `Authorization: Bearer
+  // $CRON_SECRET`, not a session cookie — behind this gate it would get a 401
+  // and the refresh would silently never run. It is not unprotected: the route
+  // checks that secret itself and refuses to run at all when CRON_SECRET is
+  // unset, which is the same fail-closed posture as the rest of this file.
+  //
+  // /api/health is deliberately NOT exempt. It reveals property names, row
+  // counts and data dates, and nothing yet monitors it from outside, so it
+  // stays behind sign-in. Open it up when there is an uptime check that needs
+  // it, and give it a token of its own rather than making it public.
+  matcher: ['/((?!_vercel/|api/auth/|api/cron/).*)'],
 };
 
 function page(title, body, status) {
