@@ -36,7 +36,6 @@ export default function handler(req, res) {
     response_type: 'code',
     scope: 'openid email profile',
     state: state,
-    hd: process.env.ALLOWED_DOMAIN || 'covu.com',
     prompt: 'select_account',
   });
 
