@@ -147,12 +147,55 @@ actually covers a trailing 90-day window.
 
 ## Status
 
-Milestone 1 is complete and verified, and the refresh cycle is automated:
-schema, ingestion, the domain core, health reporting, and a reconciliation that
-loads COVU's history and checks it against the source.
+Honest version, because the previous one overstated it.
 
-Still to build: per-view read APIs, the frontend, live API connectors to
-replace the sheet transport, and orgs/roles behind Google OAuth.
+**Done and tested.** Schema, ingestion, the domain core, health reporting, and
+a reconciliation that loads COVU's history and checks it against the source.
+Per-account credentials with authenticated encryption, and the constraints that
+stop a source existing without one. 40 tests.
+
+**Built but not wired.** Postgres ingestion runs from `scripts/` and the daily
+cron, but **`/api/data` still reads the Google Sheet.** Both this branch and
+the dashboard on `main` do. Nothing serves from the database yet, so the
+database is currently a very well-tested write-only store.
+
+**Not started.** Paid media in `lib/metrics.js` — every metric it exposes is
+organic search, so ads can be ingested and then cannot be read back out. Live
+API connectors. OAuth connect flows. The account switcher.
+
+## Connecting someone else's accounts
+
+The schema was always multi-tenant; what it lacked was anywhere to put a
+credential, because the sheet transport never needed one. Migration 0002 adds
+that, and with it the platform's real risk surface — the difference between
+holding COVU's data and holding a stranger's.
+
+**A credential is not an account.** One `connection` (a Google MCC, a Meta
+business) commonly reaches several ad accounts, and each of those is its own
+`source` row pointing back at it. That is why `connection.external_id` is the
+login customer or business id, never the ad account id.
+
+**Two tenants may hold the same account.** An agency and its client both
+legitimately connect the same ad account. Uniqueness is therefore
+`(org_id, provider, external_id)`, not `(provider, external_id)`. There is a
+test for this, because it is the sort of constraint that gets tightened by
+someone who has not thought about agencies.
+
+**A connection carries its own health.** `status`, `last_error`, `last_ok_at`,
+and a partial index over the unhealthy ones. This exists because of a specific
+failure: in September 2026 COVU's Meta ad account was restricted for a failed
+payment, delivery stopped dead, and it took eight days to notice, because a
+pipeline that is broken and a pipeline with nothing to report look identical
+from the outside. At one tenant that is embarrassing. At a hundred it is the
+product failing silently for people who are paying for it.
+
+**Secrets never touch the database as text.** `lib/crypto.js` seals them with
+AES-256-GCM before they get near a column, and the format carries a version
+byte so the cipher can change later without guessing from the length. See
+`CREDENTIAL_KEY` in the README for key handling — in particular, that the key
+and a database dump must not live in the same place, since together they are
+the whole secret and separately neither is anything.
+
 
 ## Known characteristics
 
