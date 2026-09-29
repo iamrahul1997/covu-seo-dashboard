@@ -41,6 +41,8 @@ const TABS = {
   ga_event_landing: '2051391862',
   ads_google_daily: '694389940',
   ads_google_keyword: '1327370572',
+  ads_meta_daily: '843438716',
+  ads_meta_ad: '656026357',
 };
 
 /* Tabs written by the ads pipeline rather than the original GSC job. They may
@@ -48,6 +50,29 @@ const TABS = {
  * whole dashboard down — the organic data is the part people rely on. */
 const OPTIONAL_TABS = new Set(['ads_google_daily', 'ads_google_keyword',
   'ads_meta_daily', 'ads_meta_ad']);
+
+/* Columns that prove a fetch returned the tab we asked for.
+ *
+ * This is not defensive padding. Asking /gviz/tq for a sheet name that does not
+ * exist does NOT fail — it returns the FIRST sheet in the workbook. Requesting
+ * the not-yet-created `ads_meta_daily` came back holding `queries` data, and
+ * because both have `impressions` and `clicks` columns it parsed cleanly and
+ * rendered 69 weeks of organic search as Meta ad performance. A tab is only
+ * accepted if it carries a column no other tab has. */
+const TAB_SIGNATURE = {
+  ads_google_daily: ['date', 'campaign', 'cost'],
+  ads_google_keyword: ['date', 'keyword', 'cost'],
+  ads_meta_daily: ['date', 'campaign', 'adset', 'spend', 'leads'],
+  ads_meta_ad: ['date', 'ad', 'adset', 'spend', 'leads'],
+};
+
+function matchesSignature(name, rows) {
+  const want = TAB_SIGNATURE[name];
+  if (!want) return true;
+  if (!rows.length) return true;      // genuinely empty is fine
+  const have = Object.keys(rows[0]);
+  return want.every((col) => have.includes(col));
+}
 
 // ---------- CSV ----------
 
@@ -90,22 +115,37 @@ async function get(url) {
   return res.text();
 }
 
+async function byName(name) {
+  const csv = await get(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq`
+    + `?tqx=out:csv&headers=1&sheet=${encodeURIComponent(name)}`);
+  return objectify(parseCSV(csv));
+}
+
 async function fetchTab(name) {
   const gid = TABS[name];
+  let rows = null;
   try {
-    const csv = await get(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`);
-    return objectify(parseCSV(csv));
+    // Never build an /export URL without a gid — an empty gid also returns the
+    // first sheet rather than failing.
+    rows = gid
+      ? objectify(parseCSV(await get(
+        `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${gid}`)))
+      : await byName(name);
   } catch (err) {
     try {
       // A renamed or recreated tab changes its gid; fall back to lookup by name.
-      const csv = await get(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq`
-        + `?tqx=out:csv&headers=1&sheet=${encodeURIComponent(name)}`);
-      return objectify(parseCSV(csv));
+      rows = await byName(name);
     } catch (err2) {
       if (OPTIONAL_TABS.has(name)) return [];
       throw new Error(`${name}: ${err2.message}`);
     }
   }
+
+  if (!matchesSignature(name, rows)) {
+    if (OPTIONAL_TABS.has(name)) return [];   // tab does not exist yet
+    throw new Error(`${name}: fetched a sheet that is not ${name}`);
+  }
+  return rows;
 }
 
 // ---------- helpers ----------
@@ -129,12 +169,6 @@ function weekOf(dateStr) {
   const d = new Date(dateStr + 'T00:00:00Z');
   const dow = (d.getUTCDay() + 6) % 7; // Mon=0
   d.setUTCDate(d.getUTCDate() - dow);
-  return d.toISOString().slice(0, 10);
-}
-
-function addDays(dateStr, n) {
-  const d = new Date(dateStr + 'T00:00:00Z');
-  d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 }
 
@@ -354,16 +388,68 @@ function rollUpAds(rows, weekIndex, keyField) {
     if (ci === undefined) { ci = names.length; idx.set(name, ci); names.push(name); }
     const id = wi + ' ' + ci;
     let b = cells.get(id);
-    if (!b) { b = [wi, ci, 0, 0, 0, 0]; cells.set(id, b); }
+    if (!b) { b = [wi, ci, 0, 0, 0, 0, 0, 0]; cells.set(id, b); }
     b[2] += int(r.impressions);
     b[3] += int(r.clicks);
     b[4] += Math.round(num(r.cost !== undefined ? r.cost : r.spend) * 100);
     b[5] += Math.round(num(r.conversions !== undefined ? r.conversions : r.leads) * 100);
+    /* Meta separates link clicks from all clicks — reactions and profile taps
+     * count in `clicks` but never reach the site, so link CTR is the honest
+     * hook metric. Google has no equivalent and leaves this zero. */
+    b[6] += int(r.link_clicks);
+    /* meeting_confirmed, Meta's custom conversion. Present only on Meta rows,
+     * and expected to be 0 across the board until covu.com's forms redirect to
+     * a thank-you page — the event has nowhere to fire from today. */
+    b[7] += int(r.meetings);
   }
   return {
     keys: names,
     rows: [...cells.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]),
   };
+}
+
+/* What each campaign was bought to do, so creatives can be judged on the metric
+ * their campaign optimised for instead of all being measured on cost per lead. */
+function objectivesByCampaign(rows) {
+  const out = {};
+  for (const r of rows) {
+    const name = String(r.campaign || '').trim();
+    const obj = String(r.objective || '').trim();
+    if (name && obj) out[name] = obj;
+  }
+  return out;
+}
+
+/* Creatives are keyed by campaign AND ad name, never ad name alone.
+ *
+ * 13 of 66 ad names run in more than one campaign — bex-service-hours runs in
+ * GUIDE, Prospecting and TOF — so keying on the name alone summed one
+ * creative's spend across every campaign it appeared in and then filed the total
+ * under whichever campaign happened to be written last. */
+const AD_KEY_SEP = '\u241f';
+function adKey(r) {
+  return String(r.campaign || '').trim() + AD_KEY_SEP + String(r.ad || '').trim();
+}
+
+/* Ad sets need the same treatment, for the same reason: "Bex" runs in both
+ * GUIDE CAMPAIGN and Prospecting. */
+function adsetKey(r) {
+  return String(r.campaign || '').trim() + AD_KEY_SEP + String(r.adset || '').trim();
+}
+
+/* One creative thumbnail per ad. The sheet repeats it on every daily row, so
+ * this collapses to a single URL keyed by the same ad name rollUpAds uses.
+ * Latest row wins — the URLs are signed and refreshed each run, so the most
+ * recent is the one most likely to still resolve. */
+function thumbnailsByAd(rows) {
+  const out = {};
+  for (const r of rows) {
+    const name = adKey(r);
+    const thumb = String(r.thumbnail || '').trim();
+    const full = String(r.image || '').trim();
+    if (name && (thumb || full)) out[name] = { t: thumb || full, f: full || thumb };
+  }
+  return out;
 }
 
 /* Keywords have no useful week-by-week shape at this spend level, so they ship
@@ -389,94 +475,6 @@ function keywordSnapshot(rows, limit) {
   }));
   out.sort((a, b) => b.cost - a.cost || b.c - a.c);
   return limit ? out.slice(0, limit) : out;
-}
-
-// ---------- HubSpot ----------
-
-// Optional. Set HUBSPOT_TOKEN (a private-app token with content analytics read)
-// in Vercel project settings to light up the conversion panel. Without it the
-// dashboard renders normally and the panel explains that it is not connected.
-async function fetchHubSpot(startDate, endDate) {
-  const token = process.env.HUBSPOT_TOKEN;
-  if (!token) return { connected: false, reason: 'HUBSPOT_TOKEN not set' };
-
-  const compact = (d) => d.replace(/-/g, '');
-  const url = 'https://api.hubapi.com/analytics/v2/reports/pages/total'
-    + `?start=${compact(startDate)}&end=${compact(endDate)}&limit=100`;
-
-  try {
-    const res = await fetch(url, {
-      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-    });
-
-    if (!res.ok) {
-      // Surface HubSpot's own message. 403 almost always means the private app
-      // is missing the business-intelligence scope; 401 means a bad or rotated
-      // token. Without this the panel just says "HTTP 403" and stalls.
-      let detail = '';
-      try {
-        const body = await res.text();
-        const parsed = JSON.parse(body);
-        detail = parsed.message || parsed.error || body.slice(0, 200);
-      } catch { detail = ''; }
-      // 403 here is always a scope problem. HubSpot names the scopes it wants
-      // in the message body, so pass that through rather than paraphrasing —
-      // an earlier guess of "business-intelligence" was simply wrong.
-      const hint = res.status === 403
-        ? ' — the private app needs the traffic-analytics-api-access or'
-          + ' cms-analytics-api-access scope'
-        : res.status === 401 ? ' — token rejected; it may have been rotated' : '';
-      return {
-        connected: false,
-        reason: `HubSpot HTTP ${res.status}${hint}${detail ? ': ' + detail : ''}`,
-      };
-    }
-
-    const json = await res.json();
-
-    /* HubSpot's analytics responses have appeared in three shapes over the
-     * years: {breakdowns:{key:metrics}}, a flat {key:metrics} map, and
-     * {results:[{...}]}. Accept all three rather than silently rendering
-     * nothing when the shape is not the one guessed. */
-    let entries = [];
-    if (Array.isArray(json)) {
-      entries = json.map((v) => [v.path || v.url || v.name || v.id || '(unknown)', v]);
-    } else if (Array.isArray(json.results)) {
-      entries = json.results.map((v) => [v.path || v.url || v.name || v.id || '(unknown)', v]);
-    } else {
-      entries = Object.entries(json.breakdowns || json);
-    }
-
-    const rows = [];
-    for (const [key, v] of entries) {
-      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
-      const views = int(v.rawViews ?? v.pageviews ?? v.visits ?? v.sessions);
-      const subs = int(v.submissions ?? v.formSubmissions);
-      const contacts = int(v.contacts ?? v.newContacts);
-      if (!views && !subs && !contacts) continue;
-      rows.push({
-        k: String(key),
-        views,
-        subs,
-        contacts,
-        bounce: num(v.bounceRate) * 100,
-        time: num(v.timePerPageview ?? v.timePerSession),
-      });
-    }
-    rows.sort((a, b) => b.views - a.views);
-
-    if (!rows.length) {
-      // Better than an empty table: name the keys we got so the shape can be fixed.
-      return {
-        connected: false,
-        reason: 'HubSpot responded but no rows matched the expected fields. Top-level keys: '
-          + Object.keys(json).slice(0, 8).join(', '),
-      };
-    }
-    return { connected: true, rows: rows.slice(0, 40), start: startDate, end: endDate };
-  } catch (err) {
-    return { connected: false, reason: String((err && err.message) || err) };
-  }
 }
 
 // ---------- payload ----------
@@ -510,17 +508,13 @@ async function build() {
   const bq = rollUp(t.blog_queries, 'query', blogIdx);
   const bp = rollUp(t.blog_pages, 'page', blogIdx);
 
+  /* Composite key computed once, so the rollup and the thumbnail map agree. */
+  const metaAdRows = (t.ads_meta_ad || []).map((r) => ({ ...r, campaign_ad: adKey(r) }));
+  const metaDailyRows = (t.ads_meta_daily || []).map((r) => ({ ...r, campaign_adset: adsetKey(r) }));
+
   const maxDay = (rows) => rows.reduce((m, r) => { const d = day(r.date); return d > m ? d : m; }, '');
   const dataThrough = maxDay(t.daily_totals);
   const queriesThrough = maxDay(t.queries);
-
-  const hubspot = await fetchHubSpot(addDays(dataThrough, -89), dataThrough);
-  /* One line of ops logging so the integration's health is visible in Vercel's
-   * runtime logs without needing a signed-in session to inspect the payload.
-   * Deliberately records only the outcome — never the token, never any row. */
-  console.log('hubspot:', hubspot.connected
-    ? 'connected, ' + hubspot.rows.length + ' rows'
-    : 'not connected — ' + hubspot.reason);
 
   return {
     meta: {
@@ -568,13 +562,15 @@ async function build() {
        * /export with an empty gid silently returns the FIRST sheet. */
       meta: {
         campaigns: rollUpAds(t.ads_meta_daily || [], wIdx, 'campaign'),
-        adsets: rollUpAds(t.ads_meta_daily || [], wIdx, 'adset'),
-        creatives: rollUpAds(t.ads_meta_ad || [], wIdx, 'ad'),
+        adsets: rollUpAds(metaDailyRows, wIdx, 'campaign_adset'),
+        creatives: rollUpAds(metaAdRows, wIdx, 'campaign_ad'),
+        thumbs: thumbnailsByAd(metaAdRows),
+        adKeySep: AD_KEY_SEP,
+        objectives: objectivesByCampaign(t.ads_meta_daily || []),
         lastRun: metaKV.ads_meta_last_run || null,
         through: maxDay(t.ads_meta_daily || []) || null,
       },
     },
-    hubspot,
   };
 }
 

@@ -9,6 +9,10 @@ data source, no ad-platform credentials anywhere near Vercel.
 | `google-ads-script.js` | Google Ads → Scripts | `ads_google_daily`, `ads_google_keyword` |
 | `meta-ads-appsscript.gs` | Apps Script (same project as the GSC pipeline) | `ads_meta_daily`, `ads_meta_ad` |
 
+HubSpot was evaluated and dropped on 2026-09-23 — its Personal Access Keys are
+rejected by the CRM API and the private app needed scopes that were never added.
+The fetcher and the dashboard card are in git history if that changes.
+
 Both are idempotent: each run refreshes the trailing 90 days and preserves
 anything older. Re-running never duplicates rows, and late-attributed
 conversions get corrected on the next pass.

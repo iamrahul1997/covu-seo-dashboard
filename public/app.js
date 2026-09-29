@@ -20,6 +20,7 @@ var TABS = [
   ['blog', 'Blog'],
   ['aeo', 'AEO Lens'],
   ['gads', 'Google Ads'],
+  ['mads', 'Meta Ads'],
 ];
 
 var RANGES = [['4', '28 days'], ['13', '3 months'], ['26', '6 months'], ['52', '12 months']];
@@ -490,75 +491,6 @@ function hostTotals(pages) {
   return out.sort(function (a, b) { return b.i - a.i; });
 }
 
-/* Search Console URLs are absolute; HubSpot keys are host+path, or a numeric
- * content id for landing pages. Normalise both so the two can be joined where a
- * match exists. */
-function normPath(u) {
-  return String(u).replace(/^https?:\/\//, '').replace(/\/+$/, '').toLowerCase();
-}
-
-/* HubSpot supplies the half Search Console cannot: what the visit did. Joined
- * onto the page list so organic reach and conversion sit on one row. */
-function renderHubSpotCard(pages) {
-  var hs = D.hubspot || { connected: false };
-  var head = '<div class="card g"><h2>Engagement &amp; conversions (HubSpot)</h2>';
-
-  if (!hs.connected || !hs.rows || !hs.rows.length) {
-    /* The remedy depends on the failure. Telling someone to add a token they
-     * already added, because the real problem is its scopes, wastes their time. */
-    var reason = String(hs.reason || 'no token');
-    var fix;
-    if (reason.indexOf('not set') >= 0) {
-      fix = 'Add <b>HUBSPOT_TOKEN</b> to the Vercel project\'s environment variables — a '
-        + 'HubSpot private-app token — then redeploy.';
-    } else if (reason.indexOf('403') >= 0) {
-      fix = 'The token is reaching HubSpot but lacks permission. In HubSpot go to '
-        + '<b>Settings → Integrations → Private Apps</b>, open the app, and under <b>Scopes</b> '
-        + 'enable <b>traffic-analytics-api-access</b> (or <b>cms-analytics-api-access</b>). Save, '
-        + 'then check whether HubSpot issued a new token — if so, update it in Vercel.';
-    } else if (reason.indexOf('401') >= 0) {
-      fix = 'HubSpot rejected the token outright. It was most likely rotated — copy the current '
-        + 'value from the private app and update <b>HUBSPOT_TOKEN</b> in Vercel.';
-    } else {
-      fix = 'The call reached HubSpot but the response did not contain the expected fields. '
-        + 'The reason above lists what came back.';
-    }
-    return head + '<div class="sub">Views, form submissions and contacts per page</div>'
-      + '<div class="note">Not connected — ' + esc(reason) + '<br><br>' + fix + '</div></div>';
-  }
-
-  var byPath = {};
-  pages.forEach(function (p) { byPath[normPath(p.k)] = p; });
-
-  var rows = hs.rows.map(function (r) {
-    var match = byPath[normPath(r.k)];
-    return {
-      k: r.k, views: r.views, subs: r.subs, contacts: r.contacts, bounce: r.bounce,
-      clicks: match ? match.c : null,
-    };
-  });
-  var subs = rows.reduce(function (a, r) { return a + r.subs; }, 0);
-  var contacts = rows.reduce(function (a, r) { return a + r.contacts; }, 0);
-  var views = rows.reduce(function (a, r) { return a + r.views; }, 0);
-
-  return head
-    + '<div class="sub">' + (hs.start ? fmtDate(hs.start) + ' → ' + fmtDate(hs.end) : 'rolling 90 days')
-    + ' · ' + F(views) + ' views · ' + F(subs) + ' submissions · ' + F(contacts) + ' contacts</div>'
-    + '<div class="tw"><table><thead><tr><th>Page</th><th>Views</th><th>Organic clicks</th>'
-    + '<th>Submissions</th><th>Contacts</th><th>Bounce</th></tr></thead><tbody>'
-    + rows.slice(0, 30).map(function (r) {
-      return '<tr><td class="q" title="' + esc(r.k) + '">' + esc(r.k) + '</td>'
-        + '<td>' + F(r.views) + '</td>'
-        + '<td class="p">' + (r.clicks === null ? '—' : F(r.clicks)) + '</td>'
-        + '<td>' + F(r.subs) + '</td><td>' + F(r.contacts) + '</td>'
-        + '<td class="p">' + F1(r.bounce) + '%</td></tr>';
-    }).join('') + '</tbody></table></div>'
-    + '<div class="note">HubSpot counts <b>all</b> traffic; the organic clicks column is '
-    + 'Search Console only, over the range selected above — so views are normally much higher. '
-    + 'A dash means no Search Console match, which is expected for '
-    + 'go.covu.com landing pages and HubSpot-hosted URLs.</div></div>';
-}
-
 function renderPages(w) {
   var pages = aggregate(D.pStr, D.pW, w.a, w.b, false)
     .sort(function (a, b) { return b.c - a.c; });
@@ -590,8 +522,7 @@ function renderPages(w) {
     + '</div>'
     + '<div class="card g"><h2>Which query lands on which page</h2>'
     + '<div class="sub">Rolling ' + (D.meta.queryPageWindow || 90) + '-day window · not filtered by the range above</div>'
-    + pairTable(pairs, 25) + '</div>'
-    + renderHubSpotCard(pages);
+    + pairTable(pairs, 25) + '</div>';
 }
 
 /* blog.covu.com is a separate Search Console property with its own, much
@@ -776,21 +707,7 @@ function renderAEO(w, queries) {
 
   var appearance = D.searchAppearance || [];
 
-  /* Conversion detail lives on the Pages tab, joined to the page list, so it is
-   * a one-line summary here rather than a second copy of the same table. */
-  var hs = D.hubspot || { connected: false, reason: 'not configured' };
-  var hsBlock = '';
-  if (hs.connected && hs.rows && hs.rows.length) {
-    var hsSubs = hs.rows.reduce(function (a, r) { return a + r.subs; }, 0);
-    var hsContacts = hs.rows.reduce(function (a, r) { return a + r.contacts; }, 0);
-    hsBlock = '<div class="card g"><h2>Did any of it convert?</h2>'
-      + '<div class="sub">HubSpot, last 90 days across the whole estate</div>'
-      + '<div class="note"><b>' + F(hsSubs) + '</b> form submissions and <b>' + F(hsContacts)
-      + '</b> new contacts. Answer-engine traffic is measured in single-digit sessions, so it is not '
-      + 'yet a meaningful share of these — the per-page breakdown is on the <b>Pages</b> tab.</div></div>';
-  }
-
-  /* GA form events give a conversion signal without HubSpot. */
+  /* GA form events are the conversion signal available here. */
   var evBlock = '';
   if (ga.events && ga.events.length) {
     var evTotals = {};
@@ -824,8 +741,7 @@ function renderAEO(w, queries) {
         + '<div class="sub">How the site shows up in search features · all-time snapshot</div>'
         + dimTable(appearance, 'Appearance') + '</div>'
       : '')
-    + evBlock
-    + hsBlock;
+    + evBlock;
 }
 
 /* ---------- paid media ---------- */
@@ -865,13 +781,14 @@ function adsTotals(table, a, b) {
 function adsByKey(table, a, b) {
   if (!table || !table.keys.length) return [];
   var out = table.keys.map(function (k) {
-    return { k: k, i: 0, c: 0, cents: 0, conv: 0 };
+    return { k: k, i: 0, c: 0, cents: 0, conv: 0, lc: 0, mtg: 0 };
   });
   table.rows.forEach(function (r) {
     if (r[0] < a || r[0] > b) return;
     var e = out[r[1]];
     if (!e) return;
     e.i += r[2]; e.c += r[3]; e.cents += r[4]; e.conv += r[5];
+    e.lc += (r[6] || 0); e.mtg += (r[7] || 0);
   });
   return out.filter(function (e) { return e.i > 0 || e.cents > 0; })
     .sort(function (x, y) { return y.cents - x.cents; });
@@ -956,15 +873,7 @@ function renderGoogleAds(w, queries) {
       + 'it is not. The data cannot settle which; it can only price the question.</div></div>';
   }
 
-  var stale = '';
-  if (g.lastRun) {
-    var ageDays = Math.floor((Date.now() - new Date(g.lastRun).getTime()) / 86400000);
-    if (ageDays >= 2) {
-      stale = '<div class="warn"><span class="ic">⚠</span><span>The ads pipeline last ran <b>'
-        + ageDays + ' days ago</b> (' + esc(String(g.lastRun).slice(0, 10)) + '). Check the daily '
-        + 'schedule on the Google Ads script — these numbers are going stale.</span></div>';
-    }
-  }
+  var stale = adsStaleness(g, 'Google Ads', 1);
 
   E('p-gads').innerHTML = stale
     + '<div class="card g"><h2>Weekly spend</h2>'
@@ -985,6 +894,285 @@ function renderGoogleAds(w, queries) {
       return { k: k.k + (k.m ? '  · ' + k.m.toLowerCase() : ''), i: k.i, c: k.c, cents: Math.round(k.cost * 100), conv: Math.round(k.conv * 100) };
     }), 'Keyword') + '</div>';
 }
+
+/* Meta reports spend, link clicks and leads — a different shape from Google's
+ * cost/conversions, so it gets its own table rather than a shared one bent to
+ * fit both. Link clicks matter: reactions and profile taps land in `clicks` but
+ * never reach the site. */
+function metaTable(rows, label) {
+  if (!rows.length) return '<div class="note">No spend in this range</div>';
+  return '<div class="tw"><table><thead><tr><th>' + label + '</th><th>Spend</th><th>Impr.</th>'
+    + '<th>Link clicks</th><th>Link CTR</th><th>Leads</th><th>Cost / lead</th>'
+    + '<th>Meetings</th>'
+    + '</tr></thead><tbody>'
+    + rows.map(function (r) {
+      var leads = r.conv / 100;
+      return '<tr><td class="q" title="' + esc(r.k) + '">' + esc(r.k) + '</td>'
+        + '<td>' + money(r.cents) + '</td><td>' + F(r.i) + '</td>'
+        + '<td>' + F(r.lc) + '</td>'
+        + '<td>' + F1(r.i ? r.lc / r.i * 100 : 0) + '%</td>'
+        + '<td>' + F1(leads) + '</td>'
+        + '<td class="p">' + (leads ? money(r.cents / leads) : '—') + '</td>'
+        + '<td>' + F(r.mtg) + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+function median(values) {
+  if (!values.length) return 0;
+  var s = values.slice().sort(function (a, b) { return a - b; });
+  var mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/* What a campaign was bought to do decides how its creatives are judged.
+ *
+ * Grading everything on cost per lead punished campaigns that never optimised
+ * for leads: TOF LINK CLICK IMPRESSION takes 242k impressions and 1,291 clicks
+ * for zero leads, by design, and read KILL against a benchmark it was not
+ * competing in. Meta's own objective decides the close metric instead. */
+function campaignGoal(objective, totals) {
+  var o = String(objective || '').toUpperCase();
+  if (/LEAD|SALES|CONVERSION/.test(o)) return 'leads';
+  if (/TRAFFIC|LINK_CLICK/.test(o)) return 'clicks';
+  if (/AWARENESS|REACH|IMPRESSION/.test(o)) return 'reach';
+  if (/ENGAGEMENT/.test(o)) return 'clicks';
+
+  /* No objective recorded yet — infer from the campaign's own conversion rate.
+   *
+   * "Did any creative produce a lead" is too weak a test: TOF LINK CLICK
+   * IMPRESSION has zero leads across 1,291 link clicks, yet two of its
+   * creatives carry fractional lead values that round to nothing, which was
+   * enough to get the whole campaign judged on cost per lead. The account
+   * separates cleanly on rate instead — real lead campaigns run 4.7% to 45% of
+   * link clicks, TOF runs 0%. */
+  var leads = (totals.conv || 0) / 100;
+  var rate = totals.lc ? leads / totals.lc : 0;
+  return (leads >= 1 && rate >= 0.01) ? 'leads' : 'clicks';
+}
+
+var GOAL_LABEL = {
+  leads: { close: 'Cost / lead', unit: 'cost per lead' },
+  clicks: { close: 'Cost / link click', unit: 'cost per link click' },
+  reach: { close: 'CPM', unit: 'cost per 1,000 impressions' },
+};
+
+/* The close metric, in cents, for one creative under its campaign's goal.
+ * null means the creative produced nothing to divide by. */
+function closeCost(r, goal) {
+  if (goal === 'leads') return r.conv > 0 ? r.cents / (r.conv / 100) : null;
+  if (goal === 'clicks') return r.lc > 0 ? r.cents / r.lc : null;
+  return r.i > 0 ? r.cents / (r.i / 1000) : null;   // reach -> CPM
+}
+
+/* Per-campaign benchmarks for the creative table.
+ *
+ * Returns the medians each ad in the campaign is read against: hook is link CTR
+ * — did the ad earn the click — and close follows the campaign's objective.
+ * Medians are per campaign because one median across five campaigns with
+ * different economics is not a benchmark for any of them.
+ *
+ * Withheld below four funded creatives: an average over two or three is a coin
+ * toss. Named a scorecard from when it also printed a call per ad; it now
+ * supplies the line and leaves the judgement to the reader. */
+function creativeScorecard(rows, goal) {
+  var SPEND_FLOOR = 0.3;
+  var medSpend = median(rows.map(function (r) { return r.cents; }));
+  var qualifying = rows.filter(function (r) { return r.cents >= medSpend * SPEND_FLOOR; });
+
+  if (qualifying.length < 4) {
+    return { rows: rows, graded: false, goal: goal, n: qualifying.length };
+  }
+
+  var medHook = median(qualifying.map(function (r) { return r.i ? r.lc / r.i * 100 : 0; }));
+  var closes = [];
+  qualifying.forEach(function (r) {
+    var c = closeCost(r, goal);
+    if (c !== null) closes.push(c);
+  });
+  var medClose = median(closes);
+
+  return { rows: rows, graded: true, goal: goal, medHook: medHook, medClose: medClose, n: qualifying.length };
+}
+
+/* One creative row. Thumbnail only — no link out; the picture is the point. */
+function creativeRow(r, goal) {
+  var art = ((D.ads.meta && D.ads.meta.thumbs) || {})[r.k] || {};
+  var name = adKeyParts(r.k).ad;
+  var close = closeCost(r, goal);
+  return '<tr><td class="q" title="' + esc(name) + '"><div class="adcell">'
+    + (art.t
+      ? '<img class="thumb" src="' + esc(art.t) + '" alt="Creative for ' + esc(name) + '" '
+        + 'loading="lazy" tabindex="0" data-full="' + esc(art.f || art.t) + '" '
+        + 'data-name="' + esc(name) + '" onerror="this.style.display=\'none\'">'
+      : '<span class="thumb"></span>')
+    + '<span>' + esc(name) + '</span></div></td>'
+    + '<td>' + money(r.cents) + '</td>'
+    + '<td>' + (r.i ? (r.lc / r.i * 100).toFixed(2) : '0.00') + '%</td>'
+    + '<td>' + F(r.lc) + '</td>'
+    + '<td>' + F1(r.conv / 100) + '</td>'
+    + '<td class="p">' + (close === null ? '—' : money(close)) + '</td></tr>';
+}
+
+/* Is this ads source stale, and can we even tell?
+ *
+ * Judged on the newest DATA date, not on the run stamp. The stamp lives in the
+ * sheet's `meta` tab, which the nightly GSC pipeline rewrites wholesale at
+ * 01:14 — so a stamp only survives if its script ran afterwards and succeeded.
+ * When the Meta fetcher started failing on 26 Sep its stamp simply vanished,
+ * and the old check (`if (lastRun)`) produced no warning at all: it went quiet
+ * precisely when it was needed. The data date cannot disappear that way.
+ *
+ * `lag` is how far behind "now" this source is expected to run: Meta and Google
+ * Ads report same-day or next-day, unlike Search Console's three. */
+function adsStaleness(source, label, lag) {
+  if (!source || !source.through) return '';
+  var newest = new Date(source.through + 'T00:00:00Z').getTime();
+  var days = Math.floor((Date.now() - newest) / 86400000);
+  if (days <= lag + 1) return '';
+  return '<div class="warn"><span class="ic">⚠</span><span>'
+    + label + ' data stops at <b>' + fmtDate(source.through) + '</b>, <b>' + days
+    + ' days ago</b>. '
+    + (source.lastRun
+      ? 'The fetcher last ran ' + esc(String(source.lastRun).slice(0, 10)) + '. '
+      : 'No successful run is recorded — the job is erroring rather than merely late. ')
+    + 'Check the Apps Script execution log; everything below is history, not current.'
+    + '</span></div>';
+}
+
+/* Creatives and ad sets are both keyed campaign-then-name: the same creative
+ * runs in up to three campaigns, and the "Bex" ad set in two, so keying on the
+ * name alone merged their spend and filed the total under one of them. */
+function adKeyParts(key) {
+  var sep = (D.ads.meta && D.ads.meta.adKeySep) || '\u241f';
+  var i = String(key).indexOf(sep);
+  return i < 0
+    ? { campaign: '', ad: String(key) }
+    : { campaign: key.slice(0, i), ad: key.slice(i + sep.length) };
+}
+
+function renderMetaAds(w) {
+  var m = (D.ads && D.ads.meta) || null;
+  if (!m || !m.campaigns || !m.campaigns.keys.length) {
+    E('p-mads').innerHTML = '<div class="card g"><h2>Meta Ads</h2>'
+      + '<div class="note">No Meta data in the sheet yet. The Apps Script in '
+      + '<b>pipeline/meta-ads-appsscript.gs</b> writes <b>ads_meta_daily</b> and '
+      + '<b>ads_meta_ad</b>; once it has run, this tab fills in.</div></div>';
+    return;
+  }
+
+  var labels = [], flags = [];
+  for (var i = w.a; i <= w.b; i++) {
+    labels.push('Week of ' + fmtDate(D.weeks[i]));
+    flags.push(D.weekDays[i] < 7);
+  }
+
+  var campaigns = adsByKey(m.campaigns, w.a, w.b);
+  var adsets = adsByKey(m.adsets, w.a, w.b);
+  var creatives = adsByKey(m.creatives, w.a, w.b);
+  var objectives = m.objectives || {};
+
+
+  var stale = adsStaleness(m, 'Meta', 1);
+
+  /* Account-level spend first, then one self-contained block per campaign.
+   * Three flat tables threw away the hierarchy that actually matters when
+   * managing this account. */
+  var html = stale
+    + '<div class="card g"><h2>Weekly spend</h2>'
+    + '<div class="sub">' + campaigns.length + ' campaign'
+    + (campaigns.length === 1 ? '' : 's') + ' · ' + (w.b - w.a + 1) + ' weeks'
+    + (flags.some(Boolean) ? ' · hollow dot = partial week' : '') + '</div>'
+    + chart(adsSeries(m.campaigns, w.a, w.b), labels, flags, '#0b5ed9') + '</div>';
+
+  campaigns.forEach(function (camp) {
+    var mine = creatives.filter(function (r) { return adKeyParts(r.k).campaign === camp.k; });
+    /* Ad sets carry the same composite key as creatives — "Bex" runs in two
+     * campaigns — so they are filtered and relabelled the same way. */
+    var mySets = adsets.filter(function (r) { return adKeyParts(r.k).campaign === camp.k; })
+      .map(function (r) {
+        var copy = {}; for (var f in r) copy[f] = r[f];
+        copy.k = adKeyParts(r.k).ad;
+        return copy;
+      });
+    var goal = campaignGoal(objectives[camp.k], camp);
+    var lbl = GOAL_LABEL[goal];
+    var score = creativeScorecard(mine, goal);
+    var leads = camp.conv / 100;
+    var close = closeCost(camp, goal);
+
+    html += '<div class="card g"><h2>' + esc(camp.k) + '</h2>'
+      + '<div class="sub">'
+      + (objectives[camp.k]
+        ? 'Objective <b>' + esc(objectives[camp.k].replace(/^OUTCOME_/, '').toLowerCase()) + '</b>'
+        : 'No objective recorded — judged on what it produced')
+      + ' · judged on ' + lbl.unit + '</div>'
+
+      /* Campaign headline, in the terms of its own objective. */
+      + '<div class="brow" style="grid-template-columns:repeat(4,1fr);gap:16px">'
+      + '<span>Spend <b>' + money(camp.cents) + '</b></span>'
+      + '<span>Link clicks <b>' + F(camp.lc) + '</b></span>'
+      + '<span>Leads <b>' + F1(leads) + '</b></span>'
+      + '<span>' + lbl.close + ' <b>' + (close === null ? '—' : money(close)) + '</b></span>'
+      + '</div>'
+
+      + (mySets.length > 1
+        ? '<div class="sub" style="margin-top:14px;padding-left:0"><b>Ad sets</b></div>'
+          + metaTable(mySets, 'Ad set')
+        : '')
+
+      + '<div class="sub" style="margin-top:16px;padding-left:0"><b>Creatives</b> · hook = link CTR'
+      + ' · close = ' + lbl.unit + '</div>'
+      + (mine.length
+        ? '<div class="tw"><table><thead><tr><th>Ad</th><th>Spend</th>'
+          + '<th>Link CTR</th><th>Link clicks</th><th>Leads</th><th>' + lbl.close + '</th>'
+          + '</tr></thead><tbody>'
+          + score.rows.map(function (r) { return creativeRow(r, goal); }).join('')
+          + '</tbody></table></div>'
+          + (score.graded
+            ? '<div class="note">Median hook <b>' + score.medHook.toFixed(2) + '%</b> and median '
+              + lbl.unit + ' <b>' + money(score.medClose) + '</b>, across ' + score.n
+              + ' funded creatives <b>in this campaign</b> — the line each ad above is above or '
+              + 'below. Benchmarks are per campaign, so they are not comparable between them.</div>'
+            : '<div class="note">Only ' + score.n + ' creative'
+              + (score.n === 1 ? '' : 's') + ' here has meaningful spend, so no median is shown — '
+              + 'an average over two or three is a coin toss rather than a benchmark.</div>')
+        : '<div class="note">No ad-level spend in this range</div>')
+      + '</div>';
+  });
+
+  E('p-mads').innerHTML = html;
+}
+
+/* Full creative on demand. The thumbnail is all the table needs; the whole ad
+ * is often a 1080px square, so it is only fetched when someone asks for it. */
+function openLightbox(src, name) {
+  var box = E('lightbox');
+  E('lbImg').src = src;
+  E('lbCap').textContent = name || '';
+  box.classList.add('on');
+  E('lbClose').focus();
+}
+
+function closeLightbox() {
+  E('lightbox').classList.remove('on');
+  E('lbImg').removeAttribute('src');   // stop a large image decoding behind the overlay
+}
+
+document.addEventListener('click', function (ev) {
+  var img = ev.target.closest && ev.target.closest('img.thumb[data-full]');
+  if (img) { openLightbox(img.dataset.full, img.dataset.name); return; }
+  if (ev.target.id === 'lightbox' || ev.target.id === 'lbClose') closeLightbox();
+});
+
+document.addEventListener('keydown', function (ev) {
+  if (ev.key === 'Escape') closeLightbox();
+  /* Thumbnails are focusable, so the keyboard gets the same affordance. */
+  if ((ev.key === 'Enter' || ev.key === ' ')
+    && document.activeElement && document.activeElement.matches('img.thumb[data-full]')) {
+    ev.preventDefault();
+    openLightbox(document.activeElement.dataset.full, document.activeElement.dataset.name);
+  }
+});
 
 /* ---------- KPI row ---------- */
 
@@ -1141,6 +1329,39 @@ function renderKpis() {
     return;
   }
 
+  if (TAB === 'mads') {
+    var m = (D.ads && D.ads.meta) || null;
+    var mt = m ? adsTotals(m.campaigns, w.a, w.b) : { i: 0, c: 0, cents: 0, conv: 0 };
+    var mFirst = m ? adsFirstWeek(m.campaigns) : null;
+    var mCan = w.valid && mFirst !== null && w.pa >= mFirst;
+    var mp = mCan ? adsTotals(m.campaigns, w.pa, w.pb) : { i: 0, c: 0, cents: 0, conv: 0 };
+    var mFrom = mCan ? null : 'no Meta history';
+    var leadsNow = mt.conv / 100, leadsPrev = mp.conv / 100;
+    var cpl = leadsNow ? mt.cents / leadsNow : 0;
+    var pcpl = leadsPrev ? mp.cents / leadsPrev : 0;
+    var lcNow = 0, lcPrev = 0;
+    if (m && m.campaigns.rows) {
+      m.campaigns.rows.forEach(function (r) {
+        if (r[0] >= w.a && r[0] <= w.b) lcNow += (r[6] || 0);
+        else if (mCan && r[0] >= w.pa && r[0] <= w.pb) lcPrev += (r[6] || 0);
+      });
+    }
+    E('k4').innerHTML =
+      kpi('Spend', money(mt.cents), mCan ? pctChip(mt.cents, mp.cents) : noChip,
+        mCan ? money(mp.cents) : (mFrom || noFrom))
+      + kpi('Leads', F1(leadsNow), mCan ? pctChip(mt.conv, mp.conv) : noChip,
+        mCan ? F1(leadsPrev) : (mFrom || noFrom))
+      + kpi('Cost per lead', cpl ? money(cpl) : '—',
+        mCan && pcpl ? posChip(cpl, pcpl) : noChip, mCan && pcpl ? money(pcpl) : (mFrom || noFrom))
+      + kpi('Link clicks', F(lcNow), mCan ? pctChip(lcNow, lcPrev) : noChip,
+        mCan ? F(lcPrev) : (mFrom || noFrom));
+    E('kpiNote').innerHTML = '<div class="note" style="margin:0 0 16px">'
+      + 'Link clicks, not all clicks — reactions and profile taps count in Meta\'s click total but '
+      + 'never reach the site. Cost per lead is shown green when it falls. '
+      + 'Leads are Meta\'s own attribution.</div>';
+    return;
+  }
+
   // Overview — the site-wide totals.
   var now = CTX.now, before = CTX.before;
   E('k4').innerHTML = four(
@@ -1186,6 +1407,7 @@ function render() {
   renderBlog(w);
   renderAEO(w, queries);
   renderGoogleAds(w, queries);
+  renderMetaAds(w);
 
   E('foot').innerHTML = 'Source: Google Search Console + GA4 via the nightly pipeline into Google Sheets · '
     + esc(D.meta.property) + ' · ' + D.weeks.length + ' weeks held'
