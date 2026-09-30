@@ -1,4 +1,9 @@
-// COVU SEO & AEO dashboard — data API
+// Search & ads dashboard — data API
+//
+// Nothing here names a company. The tenant's identity is derived from the
+// Search Console property the sheet reports on, and every label the frontend
+// shows comes back in meta. A different spreadsheet yields a different
+// product without a code change.
 //
 // Reads the "GSC Data" Google Sheet (19 tabs, refreshed nightly by the GSC/GA
 // pipeline) and returns a compact JSON payload for public/app.js.
@@ -6,7 +11,9 @@
 // Rebuilt 2026-08-24. The original implementation was lost — it existed only
 // inside a Vercel deployment with no repo and no local copy.
 
-const SHEET_ID = process.env.SHEET_ID || '1IuI7NqgsrourIz1BeH44zx_Wp5_xSaGffkxYS1eYXXc';
+// No default. A dashboard silently reporting on somebody else's spreadsheet
+// because an env var was missing is worse than one that refuses to start.
+const SHEET_ID = process.env.SHEET_ID;
 const TTL_MS = 30 * 60 * 1000;
 
 // Tabs we read, mapped to their sheet gid. Anything not listed is unused.
@@ -485,6 +492,40 @@ async function build() {
   const t = {};
   await Promise.all(Object.keys(TABS).map(async (name) => { t[name] = await fetchTab(name); }));
 
+/**
+ * The registrable name of a property, used as the default brand term.
+ *
+ * "sc-domain:acme.com" -> "acme". This is what makes the dashboard generic
+ * without configuration: for the overwhelming majority of sites the brand IS
+ * the domain, so deriving it means a new tenant works out of the box, and
+ * BRAND_TERMS overrides it for the cases where it does not (a company trading
+ * under a name its domain does not contain).
+ */
+function siteNameOf(property) {
+  const host = String(property || '').replace(/^sc-domain:/, '').replace(/^https?:\/\//, '');
+  const parts = host.split('.').filter(Boolean);
+  if (!parts.length) return '';
+  // Drop the public suffix. Two labels covers .com/.io; three covers .co.uk.
+  const drop = parts.length > 2 && parts[parts.length - 2].length <= 3 ? 2 : 1;
+  return parts[Math.max(0, parts.length - 1 - drop)] || parts[0];
+}
+
+/**
+ * Brand terms, as literal strings — never as a pattern.
+ *
+ * Returned to the browser as an array so the frontend escapes and compiles
+ * them itself. Shipping a regex *source string* is exactly the mistake that
+ * made "\\bcovu\\b" match nothing and report 98% of branded traffic as
+ * non-branded. See lib/brand.js for the full account.
+ */
+function brandTermsFor(metaKV, property) {
+  const configured = String(process.env.BRAND_TERMS || metaKV.brand_terms || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  if (configured.length) return configured;
+  const derived = siteNameOf(property);
+  return derived ? [derived] : [];
+}
+
   const metaKV = {};
   for (const r of t.meta) if (r.key) metaKV[r.key] = r.value;
 
@@ -518,8 +559,14 @@ async function build() {
 
   return {
     meta: {
-      property: (metaKV.property_root || 'sc-domain:covu.com').replace('sc-domain:', ''),
-      blogProperty: (metaKV.property_blog_ || 'sc-domain:blog.covu.com').replace('sc-domain:', ''),
+      property: String(metaKV.property_root || '').replace('sc-domain:', ''),
+      blogProperty: String(metaKV.property_blog_ || '').replace('sc-domain:', ''),
+      // Shown in the header, the <title> and the footer. Falls back to the
+      // property so an unconfigured tenant still reads sensibly.
+      siteName: metaKV.site_name
+        || (siteNameOf(metaKV.property_root) || '').replace(/^./, (c) => c.toUpperCase())
+        || String(metaKV.property_root || '').replace('sc-domain:', ''),
+      brandTerms: brandTermsFor(metaKV, metaKV.property_root),
       searchType: 'Web',
       lastRun: metaKV.last_run || null,
       dataLagDays: metaKV.data_lag_days ? Math.round(num(metaKV.data_lag_days)) : null,
@@ -575,6 +622,19 @@ async function build() {
 }
 
 export default async function handler(req, res) {
+  // Removing the hardcoded default made this a required variable. Say so
+  // explicitly: a dashboard that fetches `/spreadsheets/d/undefined` fails
+  // with a parse error three layers down, and the cause is not in the message.
+  if (!SHEET_ID) {
+    res.setHeader('cache-control', 'no-store');
+    res.status(503).json({
+      error: 'SHEET_ID is not set.',
+      detail: 'This dashboard reads a Google Sheet identified by SHEET_ID. '
+        + 'Set it in the deployment environment to the spreadsheet id '
+        + '(the segment between /d/ and /edit in its URL).',
+    });
+    return;
+  }
   try {
     const fresh = req.query && (req.query.fresh === '1' || req.query.nocache === '1');
     if (!cache || fresh || Date.now() - cache.at > TTL_MS) {
