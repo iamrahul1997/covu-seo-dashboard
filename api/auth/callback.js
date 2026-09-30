@@ -1,5 +1,8 @@
-// Step 2 of the OAuth code flow: exchange the code, check the domain, set the
-// session cookie.
+// Step 2 of the OAuth code flow: exchange the code, set the session cookie.
+//
+// No longer the primary sign-in — see api/auth/password.js — and no longer
+// restricted to a domain. Kept working for anyone who has Google credentials
+// configured.
 import {
   signSession, parseCookies, serializeCookie,
   SESSION_COOKIE, OAUTH_COOKIE, SESSION_DAYS,
@@ -91,16 +94,12 @@ export default async function handler(req, res) {
   if (claims.exp && Date.now() / 1000 > claims.exp) return deny(res, 'Identity token had already expired.');
 
   const email = String(claims.email || '').toLowerCase();
-  const domain = (process.env.ALLOWED_DOMAIN || 'covu.com').toLowerCase();
-  const extra = String(process.env.ALLOWED_EMAILS || '')
-    .toLowerCase().split(',').map((s) => s.trim()).filter(Boolean);
 
+  // The covu.com restriction was removed on 2026-09-29. This is becoming a
+  // product other companies use, so a gate admitting one company's staff is
+  // the wrong shape. A verified address is still required: an unverified one
+  // proves nothing about who is holding it.
   if (!claims.email_verified) return deny(res, 'That Google account has an unverified email address.');
-  const domainOk = claims.hd === domain || email.endsWith('@' + domain);
-  if (!domainOk && extra.indexOf(email) < 0) {
-    return deny(res, 'This dashboard is restricted to <b>' + domain + '</b> accounts. '
-      + 'You signed in as <b>' + email.replace(/[<>]/g, '') + '</b>.');
-  }
 
   const token = await signSession({
     email: email,
