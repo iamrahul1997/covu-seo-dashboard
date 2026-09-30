@@ -1,4 +1,4 @@
-/* COVU SEO & AEO dashboard.
+/* Search & ads dashboard.
  *
  * Rebuilt 2026-08-24. Deliberately un-minified: the previous build shipped only
  * as minified output with no source anywhere, which is why it could not be
@@ -36,7 +36,32 @@ var RANGES = [['4', '28 days'], ['13', '3 months'], ['26', '6 months'], ['52', '
  * the two spacing variants people actually type. Misspellings (covou, covo,
  * covve) stay non-branded on purpose — covve is a different company.
  */
-var BRAND = /covu|co\.vu|co vu/i;
+/* Brand matching is built from meta.brandTerms at load, not written here.
+ *
+ * Terms arrive as literal strings and are escaped before they reach a regex,
+ * so a term containing a metacharacter matches itself. The predecessor to this
+ * file did `new RegExp("\\bcovu\\b")` — from a string, "\\b" is a backspace,
+ * the pattern matched nothing, and the dashboard reported 100% non-branded
+ * traffic when the true figure was under 2%. Never compile a pattern that
+ * arrived as a string; compile literals you escaped yourself. */
+var BRAND = null;
+
+function escapeLiteral(term) {
+  return String(term).replace(/[.*+?^${}()|[\]\\]/g, function (m) { return '\\' + m; });
+}
+
+function buildBrand(terms) {
+  // Trim BEFORE discarding. A whitespace-only term is truthy, so filtering
+  // first left "   " in place and compiled /   /i — which marks every query
+  // containing a space as branded.
+  var list = (terms || [])
+    .map(function (t) { return escapeLiteral(String(t == null ? "" : t).trim()); })
+    .filter(function (t) { return t.length > 0; });
+  // No terms means no way to tell branded from non-branded. Returning null
+  // rather than a regex that matches everything or nothing lets the callers
+  // report "unknown" instead of a confident wrong number.
+  return list.length ? new RegExp(list.join('|'), 'i') : null;
+}
 
 /* Question-shaped queries, the ones answer engines tend to absorb. */
 var QUESTION_MARKERS = [' how ', ' how to', ' what', ' why', ' when', ' where', ' who',
@@ -206,7 +231,7 @@ function aggregate(strings, rows, a, b, classify) {
     e.ct = e.i ? e.c / e.i * 100 : 0;
     e.po = e.i ? e.w / e.i : 0;
     if (classify) {
-      e.brand = BRAND.test(e.k);
+      e.brand = BRAND ? BRAND.test(e.k) : false;
       e.question = isQuestion(e.k);
     }
     out.push(e);
@@ -1380,6 +1405,7 @@ function render() {
   var before = w.valid ? sumTotals(D.totals, w.pa, w.pb) : { c: 0, i: 0, ct: 0, po: 0 };
   var queries = aggregate(D.qStr, D.qW, w.a, w.b, true).sort(function (a, b) { return b.c - a.c; });
 
+  applyTenant(D.meta);
   E('prop').textContent = D.meta.property;
   /* Say both dates. The old build showed only the end of the newest week —
    * "data through Aug 23" when the sheet actually stopped on Aug 20. */
@@ -1492,6 +1518,14 @@ function renderWho() {
 }
 
 renderWho();
+
+function applyTenant(meta) {
+  BRAND = buildBrand(meta && meta.brandTerms);
+  var name = (meta && meta.siteName) || '';
+  if (name) document.title = name + ' · Search & Ads';
+  var el = document.getElementById('brandName');
+  if (el && name) el.textContent = name;
+}
 
 fetch('/api/data', { cache: 'no-store' })
   .then(function (res) {
